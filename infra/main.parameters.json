@@ -1,0 +1,21 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "location": {
+      "value": "swedencentral"
+    },
+    "baseName": {
+      "value": "hotelapi"
+    },
+    "azureOpenAiEndpoint": {
+      "value": "https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/"
+    },
+    "azureOpenAiApiKey": {
+      "value": ""
+    },
+    "azureOpenAiDeployment": {
+      "value": "gpt-5.2-chat"
+    }
+  }
+}

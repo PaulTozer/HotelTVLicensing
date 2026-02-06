@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  hotel-api:
+    build: .
+    container_name: hotel-info-api
+    ports:
+      - "8000:8000"
+    environment:
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # Uncomment for Azure OpenAI:
+      # - AZURE_OPENAI_ENDPOINT=${AZURE_OPENAI_ENDPOINT}
+      # - AZURE_OPENAI_API_KEY=${AZURE_OPENAI_API_KEY}
+      # - AZURE_OPENAI_DEPLOYMENT=${AZURE_OPENAI_DEPLOYMENT}
+      - LOG_LEVEL=INFO
+      - MAX_REQUESTS_PER_MINUTE=30
+      - SCRAPE_TIMEOUT_SECONDS=30
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8000/health')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Optional: Add Redis for caching (future enhancement)
+  # redis:
+  #   image: redis:7-alpine
+  #   container_name: hotel-api-redis
+  #   ports:
+  #     - "6379:6379"
+  #   restart: unless-stopped

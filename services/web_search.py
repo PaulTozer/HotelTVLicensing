@@ -238,9 +238,18 @@ class WebSearchService:
         clean_name_no_prefix = clean_name_no_prefix.strip('-')
         clean_name_dash_no_prefix = clean_name_dash_no_prefix.strip('-')
         
-        candidates = []
+        # Also create version without the city name (e.g., "Brighton Marina House Hotel" -> "marinahouse")
+        # Hotels often don't include the city name in their domain
+        clean_name_no_city = clean_name
+        clean_name_no_city_no_prefix = clean_name_no_prefix
         
         clean_city = re.sub(r'[^\w]', '', city.lower()) if city else ''
+        
+        if clean_city:
+            clean_name_no_city = clean_name.replace(clean_city, '')
+            clean_name_no_city_no_prefix = clean_name_no_prefix.replace(clean_city, '')
+        
+        candidates = []
         
         # Try common URL patterns - FULL NAME FIRST (most specific), then variations
         url_patterns = []
@@ -266,6 +275,20 @@ class WebSearchService:
                 f"https://www.{clean_name_no_prefix}{clean_city}hotel.com",
             ])
         
+        # IMPORTANT: Patterns WITHOUT city name in domain (e.g., "Brighton Marina House Hotel" -> marinahousehotel.com)
+        # Many hotels don't include the city in their domain name
+        if clean_name_no_city_no_prefix and clean_name_no_city_no_prefix != clean_name_no_prefix:
+            url_patterns.extend([
+                f"https://www.{clean_name_no_city_no_prefix}hotel.com",
+                f"https://{clean_name_no_city_no_prefix}hotel.com",
+                f"https://www.{clean_name_no_city_no_prefix}hotel.co.uk",
+                f"https://{clean_name_no_city_no_prefix}hotel.co.uk",
+                f"https://www.{clean_name_no_city_no_prefix}.com",
+                f"https://{clean_name_no_city_no_prefix}.com",
+                f"https://www.{clean_name_no_city_no_prefix}.co.uk",
+                f"https://{clean_name_no_city_no_prefix}.co.uk",
+            ])
+        
         # Standard patterns (without full name)
         url_patterns.extend([
             f"https://www.{clean_name_no_prefix}hotel.co.uk",
@@ -280,6 +303,17 @@ class WebSearchService:
             f"https://www.{clean_name_no_prefix}.com",
             f"https://www.the{clean_name_no_prefix}.com",
         ])
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_patterns = []
+        for p in url_patterns:
+            if p not in seen:
+                seen.add(p)
+                unique_patterns.append(p)
+        url_patterns = unique_patterns
+        
+        logger.info(f"Trying {len(url_patterns)} URL patterns for '{name}'")
         
         # Test each URL
         for url in url_patterns:

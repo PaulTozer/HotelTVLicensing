@@ -131,26 +131,39 @@ async def lookup_batch(request: HotelBatchRequest):
     """
     Look up information for multiple hotels (max 100 per request).
     
-    Each hotel in the batch will be processed sequentially with a 2-second delay
-    between each lookup to avoid rate limiting. For AI agent use, limit batches
-    to 5-10 hotels for best results.
+    Hotels are processed in parallel (up to 3 concurrent) with rate limiting.
     
-    **Recommended batch sizes:**
-    - 5 hotels: ~1 minute, best quality
-    - 10 hotels: ~2 minutes, good quality  
-    - 20+ hotels: Quality may degrade due to rate limits
+    **Performance estimates:**
+    - 10 hotels: ~1-2 minutes (3 parallel)
+    - 20 hotels: ~2-4 minutes
+    - 50 hotels: ~5-10 minutes
+    
+    **Scaling:**
+    - Uses 3 concurrent lookups by default
+    - Each lookup has a 2-3 second delay after completion
+    - Azure OpenAI rate limits are the main constraint
     """
     if not lookup_service:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
-    # Warn if batch is large
-    if len(request.hotels) > 10:
-        logger.warning(f"Large batch of {len(request.hotels)} hotels - quality may be affected")
+    # Adjust parallelism based on batch size
+    if len(request.hotels) <= 5:
+        max_concurrent = 2
+        delay = 2.0
+    elif len(request.hotels) <= 20:
+        max_concurrent = 3
+        delay = 2.5
+    else:
+        max_concurrent = 3
+        delay = 3.0
+        logger.warning(f"Large batch of {len(request.hotels)} hotels - using conservative settings")
     
     try:
-        # Use 3 second delay for larger batches to be more conservative
-        delay = 3.0 if len(request.hotels) > 5 else 2.0
-        results = await lookup_service.lookup_batch(request.hotels, delay_seconds=delay)
+        results = await lookup_service.lookup_batch(
+            request.hotels, 
+            delay_seconds=delay,
+            max_concurrent=max_concurrent
+        )
         
         successful = sum(1 for r in results if r.status == StatusEnum.SUCCESS)
         partial = sum(1 for r in results if r.status == StatusEnum.PARTIAL)

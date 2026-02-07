@@ -180,23 +180,52 @@ class HotelLookupService:
             response.errors.append(str(e))
             return response
     
-    async def lookup_batch(self, requests: List[HotelSearchRequest], delay_seconds: float = 2.0) -> List[HotelInfoResponse]:
+    async def lookup_batch(self, requests: List[HotelSearchRequest], delay_seconds: float = 2.0, max_concurrent: int = 3) -> List[HotelInfoResponse]:
         """
-        Process multiple hotel lookups with delay between each.
+        Process multiple hotel lookups with controlled parallelism.
         
         Args:
             requests: List of hotel search requests
-            delay_seconds: Delay between each lookup to avoid rate limiting
+            delay_seconds: Delay between starting each batch of concurrent requests
+            max_concurrent: Maximum number of hotels to process in parallel
         """
         import asyncio
-        results = []
-        for i, request in enumerate(requests):
-            result = await self.lookup_hotel(request)
-            results.append(result)
-            # Add delay between requests (but not after the last one)
-            if i < len(requests) - 1:
-                logger.info(f"Completed {i+1}/{len(requests)}, waiting {delay_seconds}s before next...")
+        
+        results = [None] * len(requests)  # Pre-allocate to maintain order
+        semaphore = asyncio.Semaphore(max_concurrent)
+        
+        async def process_with_semaphore(index: int, request: HotelSearchRequest):
+            async with semaphore:
+                logger.info(f"Starting lookup {index+1}/{len(requests)}: {request.name}")
+                result = await self.lookup_hotel(request)
+                results[index] = result
+                # Small delay after completing to spread out API calls
                 await asyncio.sleep(delay_seconds)
+                return result
+        
+        # Create tasks for all requests
+        tasks = [
+            process_with_semaphore(i, req) 
+            for i, req in enumerate(requests)
+        ]
+        
+        # Run all tasks concurrently (semaphore limits actual parallelism)
+        await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Handle any None results (from exceptions)
+        for i, result in enumerate(results):
+            if result is None:
+                results[i] = HotelInfoResponse(
+                    search_name=requests[i].name,
+                    search_address=self._build_address(requests[i]),
+                    status=StatusEnum.ERROR,
+                    errors=["Lookup failed unexpectedly"]
+                )
+        
+        successful = sum(1 for r in results if r.status == StatusEnum.SUCCESS)
+        partial = sum(1 for r in results if r.status == StatusEnum.PARTIAL)
+        logger.info(f"Batch complete: {successful} success, {partial} partial, {len(results)-successful-partial} failed")
+        
         return results
     
     def _build_address(self, request: HotelSearchRequest) -> Optional[str]:

@@ -131,32 +131,31 @@ async def lookup_batch(request: HotelBatchRequest):
     """
     Look up information for multiple hotels (max 100 per request).
     
-    Hotels are processed in parallel (up to 3 concurrent) with rate limiting.
+    Hotels are processed in parallel (up to 5 concurrent) with rate limiting.
     
     **Performance estimates:**
-    - 10 hotels: ~1-2 minutes (3 parallel)
-    - 20 hotels: ~2-4 minutes
-    - 50 hotels: ~5-10 minutes
+    - 10 hotels: ~30-60 seconds
+    - 20 hotels: ~1-2 minutes
+    - 50 hotels: ~3-5 minutes
     
     **Scaling:**
-    - Uses 3 concurrent lookups by default
-    - Each lookup has a 2-3 second delay after completion
-    - Azure OpenAI rate limits are the main constraint
+    - Uses 5 concurrent lookups by default
+    - Azure OpenAI quota: 500K TPM
     """
     if not lookup_service:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
     # Adjust parallelism based on batch size
-    if len(request.hotels) <= 5:
-        max_concurrent = 2
-        delay = 2.0
-    elif len(request.hotels) <= 20:
-        max_concurrent = 3
-        delay = 2.5
+    if len(request.hotels) <= 10:
+        max_concurrent = 4
+        delay = 1.5
+    elif len(request.hotels) <= 30:
+        max_concurrent = 5
+        delay = 1.5
     else:
-        max_concurrent = 3
-        delay = 3.0
-        logger.warning(f"Large batch of {len(request.hotels)} hotels - using conservative settings")
+        max_concurrent = 5
+        delay = 2.0
+        logger.info(f"Large batch of {len(request.hotels)} hotels - processing with 5 concurrent")
     
     try:
         results = await lookup_service.lookup_batch(

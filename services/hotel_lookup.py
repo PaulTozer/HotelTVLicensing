@@ -180,14 +180,14 @@ class HotelLookupService:
             response.errors.append(str(e))
             return response
     
-    async def lookup_batch(self, requests: List[HotelSearchRequest], delay_seconds: float = 2.0, max_concurrent: int = 3) -> List[HotelInfoResponse]:
+    async def lookup_batch(self, requests: List[HotelSearchRequest], delay_seconds: float = 1.5, max_concurrent: int = 5) -> List[HotelInfoResponse]:
         """
         Process multiple hotel lookups with controlled parallelism.
         
         Args:
             requests: List of hotel search requests
             delay_seconds: Delay between starting each batch of concurrent requests
-            max_concurrent: Maximum number of hotels to process in parallel
+            max_concurrent: Maximum number of hotels to process in parallel (default 5)
         """
         import asyncio
         

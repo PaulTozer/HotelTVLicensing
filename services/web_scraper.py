@@ -235,27 +235,63 @@ class WebScraperService:
         return list(seen_counts.values())
     
     def find_relevant_pages(self, html: str, base_url: str) -> List[str]:
-        """Find links to relevant pages (about, rooms, contact)"""
+        """Find links to relevant pages (about, rooms, contact, FAQ)"""
         soup = BeautifulSoup(html, 'lxml')
-        relevant_urls = []
         
-        keywords = ['about', 'rooms', 'accommodation', 'contact', 'hotel', 'overview']
+        # High priority keywords - pages that often have phone numbers or room info
+        high_priority_keywords = ['contact', 'faq', 'frequently asked', 'enquir', 'call us', 'get in touch']
+        
+        # Medium priority keywords - pages with room/hotel info
+        medium_priority_keywords = ['rooms', 'accommodation', 'about', 'hotel', 'overview', 'facilities']
+        
+        # Lower priority keywords
+        low_priority_keywords = ['book', 'reservation', 'rates', 'prices', 'gallery']
+        
+        high_priority_urls = []
+        medium_priority_urls = []
+        low_priority_urls = []
         
         for link in soup.find_all('a', href=True):
             href = link.get('href', '')
-            text = link.get_text().lower()
+            text = link.get_text().lower().strip()
+            href_lower = href.lower()
             
-            # Check if link text or URL contains relevant keywords
-            for keyword in keywords:
-                if keyword in href.lower() or keyword in text:
-                    full_url = urljoin(base_url, href)
-                    if full_url.startswith('http') and full_url not in relevant_urls:
-                        # Avoid external links
-                        if urlparse(full_url).netloc == urlparse(base_url).netloc:
-                            relevant_urls.append(full_url)
+            # Skip empty or anchor-only links
+            if not href or href.startswith('#') or href.startswith('javascript:'):
+                continue
+            
+            full_url = urljoin(base_url, href)
+            
+            # Avoid external links
+            if not full_url.startswith('http') or urlparse(full_url).netloc != urlparse(base_url).netloc:
+                continue
+            
+            # Check priority
+            for keyword in high_priority_keywords:
+                if keyword in href_lower or keyword in text:
+                    if full_url not in high_priority_urls:
+                        high_priority_urls.append(full_url)
                     break
+            else:
+                for keyword in medium_priority_keywords:
+                    if keyword in href_lower or keyword in text:
+                        if full_url not in medium_priority_urls:
+                            medium_priority_urls.append(full_url)
+                        break
+                else:
+                    for keyword in low_priority_keywords:
+                        if keyword in href_lower or keyword in text:
+                            if full_url not in low_priority_urls:
+                                low_priority_urls.append(full_url)
+                            break
         
-        return relevant_urls[:5]  # Return top 5 relevant pages
+        # Combine with priority order, removing duplicates
+        all_urls = []
+        for url in high_priority_urls + medium_priority_urls + low_priority_urls:
+            if url not in all_urls:
+                all_urls.append(url)
+        
+        return all_urls[:8]  # Return top 8 relevant pages (increased from 5)
     
     async def scrape_hotel_website(self, url: str) -> Dict[str, Any]:
         """
@@ -291,9 +327,10 @@ class WebScraperService:
         
         return result
     
-    async def deep_scrape_hotel(self, base_url: str, max_pages: int = 4) -> Dict[str, Any]:
+    async def deep_scrape_hotel(self, base_url: str, max_pages: int = 6) -> Dict[str, Any]:
         """
-        Deep scrape a hotel website including subpages
+        Deep scrape a hotel website including subpages.
+        Prioritizes contact and FAQ pages which often have phone numbers and room info.
         """
         # Start with the homepage
         main_result = await self.scrape_hotel_website(base_url)
@@ -306,11 +343,28 @@ class WebScraperService:
         all_rooms = main_result["room_mentions"]
         pages_scraped = [base_url]
         
-        # Scrape relevant subpages
-        for subpage_url in main_result["relevant_pages"][:max_pages-1]:
+        # Also try common URL patterns for contact/FAQ if not found in links
+        common_paths = ['/contact', '/contact-us', '/faq', '/faqs', '/about', '/about-us']
+        additional_urls = []
+        
+        from urllib.parse import urlparse, urljoin
+        parsed_base = urlparse(base_url)
+        base_domain = f"{parsed_base.scheme}://{parsed_base.netloc}"
+        
+        for path in common_paths:
+            potential_url = base_domain + path
+            if potential_url not in main_result["relevant_pages"] and potential_url != base_url:
+                additional_urls.append(potential_url)
+        
+        # Combine found pages with common paths, prioritizing found pages
+        all_relevant_pages = main_result["relevant_pages"] + additional_urls
+        
+        # Scrape relevant subpages (increased limit for better coverage)
+        for subpage_url in all_relevant_pages[:max_pages-1]:
             if subpage_url in pages_scraped:
                 continue
-                
+            
+            logger.info(f"Scraping subpage: {subpage_url}")
             subpage_result = await self.scrape_hotel_website(subpage_url)
             pages_scraped.append(subpage_url)
             
@@ -326,6 +380,8 @@ class WebScraperService:
                 for room in subpage_result["room_mentions"]:
                     if room["count"] not in [r["count"] for r in all_rooms]:
                         all_rooms.append(room)
+        
+        logger.info(f"Deep scrape complete: {len(pages_scraped)} pages, {len(all_phones)} phones, {len(all_rooms)} room mentions")
         
         return {
             "url": base_url,

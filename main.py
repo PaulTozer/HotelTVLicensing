@@ -131,14 +131,26 @@ async def lookup_batch(request: HotelBatchRequest):
     """
     Look up information for multiple hotels (max 100 per request).
     
-    Each hotel in the batch will be processed sequentially to avoid rate limiting.
-    For large batches, consider using the async endpoint instead.
+    Each hotel in the batch will be processed sequentially with a 2-second delay
+    between each lookup to avoid rate limiting. For AI agent use, limit batches
+    to 5-10 hotels for best results.
+    
+    **Recommended batch sizes:**
+    - 5 hotels: ~1 minute, best quality
+    - 10 hotels: ~2 minutes, good quality  
+    - 20+ hotels: Quality may degrade due to rate limits
     """
     if not lookup_service:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
+    # Warn if batch is large
+    if len(request.hotels) > 10:
+        logger.warning(f"Large batch of {len(request.hotels)} hotels - quality may be affected")
+    
     try:
-        results = await lookup_service.lookup_batch(request.hotels)
+        # Use 3 second delay for larger batches to be more conservative
+        delay = 3.0 if len(request.hotels) > 5 else 2.0
+        results = await lookup_service.lookup_batch(request.hotels, delay_seconds=delay)
         
         successful = sum(1 for r in results if r.status == StatusEnum.SUCCESS)
         partial = sum(1 for r in results if r.status == StatusEnum.PARTIAL)

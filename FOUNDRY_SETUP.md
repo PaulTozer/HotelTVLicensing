@@ -53,10 +53,19 @@ When the user provides a list of hotels (from a file or directly in chat):
 4. If asked to create a spreadsheet/CSV output, format as:
    Hotel Name,Address,Rooms Min,Rooms Max,Official Website,UK Contact Phone,Rooms Source Notes,Status,Confidence Score
 
+CRITICAL - BATCH SIZE LIMITS:
+- Process hotels in batches of 5-10 maximum
+- If the user provides more than 10 hotels, split into smaller batches
+- Wait for each batch to complete before starting the next
+- Between batches, tell the user progress (e.g., "Completed 10 of 30 hotels...")
+- Each lookup takes ~10-15 seconds due to web scraping and AI analysis
+- Processing 10 hotels will take approximately 2-3 minutes
+
 IMPORTANT: 
-- Process hotels ONE AT A TIME (the API can be slow)
+- Process hotels ONE AT A TIME (the API includes rate limiting delays)
 - Always include the confidence score in your summary
 - If a lookup fails, note it and continue to the next hotel
+- If you see multiple failures in a row, slow down and wait longer between calls
 ```
 
 ---

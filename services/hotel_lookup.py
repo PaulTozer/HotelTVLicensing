@@ -180,12 +180,23 @@ class HotelLookupService:
             response.errors.append(str(e))
             return response
     
-    async def lookup_batch(self, requests: List[HotelSearchRequest]) -> List[HotelInfoResponse]:
-        """Process multiple hotel lookups"""
+    async def lookup_batch(self, requests: List[HotelSearchRequest], delay_seconds: float = 2.0) -> List[HotelInfoResponse]:
+        """
+        Process multiple hotel lookups with delay between each.
+        
+        Args:
+            requests: List of hotel search requests
+            delay_seconds: Delay between each lookup to avoid rate limiting
+        """
+        import asyncio
         results = []
-        for request in requests:
+        for i, request in enumerate(requests):
             result = await self.lookup_hotel(request)
             results.append(result)
+            # Add delay between requests (but not after the last one)
+            if i < len(requests) - 1:
+                logger.info(f"Completed {i+1}/{len(requests)}, waiting {delay_seconds}s before next...")
+                await asyncio.sleep(delay_seconds)
         return results
     
     def _build_address(self, request: HotelSearchRequest) -> Optional[str]:

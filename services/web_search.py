@@ -1,10 +1,15 @@
-"""Web search service to find hotel websites"""
+"""Web search service to find hotel websites with fallback providers"""
 
 import logging
+import asyncio
 import httpx
 from typing import List, Optional, Dict, Any
+from urllib.parse import quote_plus
 from duckduckgo_search import DDGS
+from duckduckgo_search.exceptions import RatelimitException, DuckDuckGoSearchException
 from tenacity import retry, stop_after_attempt, wait_exponential
+
+from config import SEARCH_MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,8 @@ class WebSearchService:
     def __init__(self):
         self.ddgs = DDGS()
         self.http_client = httpx.Client(timeout=30.0)
+        self._ddg_rate_limited = False
+        self._ddg_rate_limit_until = 0
     
     def _build_search_query(self, name: str, address: Optional[str] = None, 
                             city: Optional[str] = None, postcode: Optional[str] = None) -> str:
@@ -59,7 +66,7 @@ class WebSearchService:
     def search_hotel_website(self, name: str, address: Optional[str] = None,
                              city: Optional[str] = None, postcode: Optional[str] = None) -> List[Dict[str, Any]]:
         """
-        Search for a hotel's official website
+        Search for a hotel's official website with fallback providers.
         
         Returns list of search results with title, url, and description
         """
@@ -79,24 +86,98 @@ class WebSearchService:
                     effective_city = c
                     break
         
-        try:
-            # Try DuckDuckGo first
-            results = list(self.ddgs.text(query, max_results=10))
-            logger.info(f"DuckDuckGo returned {len(results)} raw results")
-            
-            if results:
-                # Filter and rank results
-                ranked_results = self._rank_results(results, name)
-                logger.info(f"Found {len(ranked_results)} results for '{name}' after filtering")
-                if ranked_results:
-                    return ranked_results
-            
-        except Exception as e:
-            logger.warning(f"DuckDuckGo search error: {e}")
+        results = []
         
-        # Fallback: Try to construct likely URLs directly
+        # Try DuckDuckGo first (unless recently rate limited)
+        import time
+        if not self._ddg_rate_limited or time.time() > self._ddg_rate_limit_until:
+            try:
+                results = list(self.ddgs.text(query, max_results=10))
+                logger.info(f"DuckDuckGo returned {len(results)} raw results")
+                self._ddg_rate_limited = False  # Reset on success
+                
+                if results:
+                    ranked_results = self._rank_results(results, name)
+                    logger.info(f"Found {len(ranked_results)} results for '{name}' after filtering")
+                    if ranked_results:
+                        return ranked_results
+                        
+            except RatelimitException as e:
+                logger.warning(f"DuckDuckGo rate limit: {e}")
+                self._ddg_rate_limited = True
+                self._ddg_rate_limit_until = time.time() + 60  # Back off for 60 seconds
+                
+            except DuckDuckGoSearchException as e:
+                logger.warning(f"DuckDuckGo search error: {e}")
+                
+            except Exception as e:
+                logger.warning(f"DuckDuckGo unexpected error: {e}")
+        else:
+            logger.info("Skipping DuckDuckGo (rate limited), using fallback")
+        
+        # Fallback 1: Try Bing scraping
+        if not results:
+            try:
+                results = self._search_bing_fallback(query)
+                if results:
+                    ranked_results = self._rank_results(results, name)
+                    logger.info(f"Bing fallback returned {len(ranked_results)} results")
+                    if ranked_results:
+                        return ranked_results
+            except Exception as e:
+                logger.warning(f"Bing fallback error: {e}")
+        
+        # Fallback 2: Try to construct likely URLs directly
         logger.info(f"Trying direct URL construction for '{name}' with city='{effective_city}'")
         return self._construct_likely_urls(name, effective_city)
+    
+    def _search_bing_fallback(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Fallback search using Bing's public search page scraping.
+        Less reliable but useful when DuckDuckGo is rate limited.
+        """
+        import re
+        from bs4 import BeautifulSoup
+        
+        try:
+            encoded_query = quote_plus(query)
+            url = f"https://www.bing.com/search?q={encoded_query}&count=10"
+            
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+                'Accept-Language': 'en-GB,en;q=0.9',
+            }
+            
+            response = self.http_client.get(url, headers=headers, follow_redirects=True)
+            response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'lxml')
+            results = []
+            
+            # Parse Bing search results
+            for item in soup.select('li.b_algo'):
+                title_elem = item.select_one('h2 a')
+                desc_elem = item.select_one('.b_caption p')
+                
+                if title_elem:
+                    href = title_elem.get('href', '')
+                    title = title_elem.get_text(strip=True)
+                    desc = desc_elem.get_text(strip=True) if desc_elem else ''
+                    
+                    if href and href.startswith('http'):
+                        results.append({
+                            'href': href,
+                            'title': title,
+                            'body': desc
+                        })
+            
+            logger.info(f"Bing scraping returned {len(results)} results")
+            return results
+            
+        except Exception as e:
+            logger.warning(f"Bing scraping failed: {e}")
+            return []
     
     def _rank_results(self, results: List[Dict], hotel_name: str) -> List[Dict[str, Any]]:
         """Rank search results by likelihood of being the official website"""

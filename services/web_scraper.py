@@ -38,6 +38,35 @@ DOMAIN_PARKING_INDICATORS = [
 class WebScraperService:
     """Service for scraping hotel websites"""
     
+    # Large hotel chains that would never have small room counts
+    CHAIN_PATTERNS = [
+        # IHG brands
+        r'\bholiday\s*inn\b', r'\bcrowne\s*plaza\b', r'\bintercontinental\b', r'\bihg\b',
+        r'\bkimpton\b', r'\bhotel\s*indigo\b', r'\beven\s*hotels?\b', r'\bstaybridge\b',
+        # Marriott brands
+        r'\bmarriott\b', r'\bcourtyard\b', r'\bresidence\s*inn\b', r'\bfairfield\b',
+        r'\bspringhill\b', r'\btowneplace\b', r'\bsheraton\b', r'\bwestin\b',
+        r'\bw\s+hotel\b', r'\baloft\b', r'\belement\b', r'\bmoxie\b', r'\britz.carlton\b',
+        # Hilton brands
+        r'\bhilton\b', r'\bdoubletree\b', r'\bhampton\b', r'\bembassy\s*suites\b',
+        r'\bhomewood\s*suites\b', r'\bconrad\b', r'\bwaldorf\b', r'\bcurio\b', r'\btapestry\b',
+        # UK chains
+        r'\bpremier\s*inn\b', r'\btravelodge\b', r'\bjurys\s*inn\b', r'\bmaldron\b',
+        # Accor brands
+        r'\bnovotel\b', r'\bibis\b', r'\bmercure\b', r'\bsofitel\b', r'\bpullman\b',
+        r'\baccor\b', r'\bmgallery\b',
+        # Wyndham brands
+        r'\bwyndham\b', r'\bramada\b', r'\bdays\s*inn\b', r'\bsuper\s*8\b', r'\bwingate\b',
+        # Radisson brands
+        r'\bradisson\b', r'\bpark\s*inn\b', r'\bcountry\s*inn\b',
+        # Best Western
+        r'\bbest\s*western\b',
+        # Hyatt brands
+        r'\bhyatt\b', r'\bandaz\b', r'\bthompson\b',
+        # Choice brands
+        r'\bclarion\b', r'\bquality\s*inn\b', r'\bcomfort\s*inn\b', r'\bsleep\s*inn\b',
+    ]
+    
     def __init__(self):
         self.timeout = httpx.Timeout(SCRAPE_TIMEOUT_SECONDS)
         self.headers = {
@@ -45,6 +74,25 @@ class WebScraperService:
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Language": "en-GB,en;q=0.9",
         }
+        # Compile chain patterns for performance
+        self._chain_regex = re.compile('|'.join(self.CHAIN_PATTERNS), re.IGNORECASE)
+    
+    def _is_chain_hotel(self, hotel_name: str) -> bool:
+        """Check if hotel name matches a known chain brand"""
+        return bool(self._chain_regex.search(hotel_name))
+    
+    def _get_min_room_threshold(self, hotel_name: str) -> int:
+        """
+        Get minimum room count threshold based on hotel type.
+        Large chains would never have small room counts (typically 100-300+).
+        Small independent hotels, pubs, and coaching inns may have 5-15 rooms.
+        """
+        if self._is_chain_hotel(hotel_name):
+            logger.info(f"Detected chain hotel: {hotel_name} - using min threshold of 50 rooms")
+            return 50  # Chains rarely have fewer than 50 rooms
+        else:
+            logger.info(f"Independent hotel: {hotel_name} - using min threshold of 5 rooms")
+            return 5  # Small pubs, coaching inns, guest houses
     
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=5))
     async def fetch_page(self, url: str) -> Optional[str]:
@@ -418,6 +466,10 @@ class WebScraperService:
             "success": False
         }
         
+        # Determine minimum room threshold based on hotel type
+        # Large chains would never have small room counts
+        min_rooms = self._get_min_room_threshold(hotel_name)
+        
         # Extract city from address if not provided
         effective_city = city
         if not effective_city and address:
@@ -425,13 +477,13 @@ class WebScraperService:
             if len(parts) > 1:
                 effective_city = parts[-2].strip()  # Usually city is second-to-last
         
-        logger.info(f"Searching booking sites for: {hotel_name} in {effective_city}")
+        logger.info(f"Searching booking sites for: {hotel_name} in {effective_city} (min rooms: {min_rooms})")
         
         # FIRST: Try city-specific booking aggregator URLs (like hotels-birmingham.net)
         # These often have reliable room count information
         if effective_city:
             try:
-                aggregator_result = await self._scrape_city_booking_aggregator(hotel_name, effective_city)
+                aggregator_result = await self._scrape_city_booking_aggregator(hotel_name, effective_city, min_rooms)
                 if aggregator_result["success"]:
                     logger.info(f"Found hotel on city booking aggregator: {aggregator_result['source']}")
                     return aggregator_result
@@ -446,7 +498,7 @@ class WebScraperService:
         
         # Try Booking.com search results
         try:
-            booking_result = await self._scrape_booking_com(search_query, hotel_name)
+            booking_result = await self._scrape_booking_com(search_query, hotel_name, min_rooms)
             if booking_result["success"]:
                 return booking_result
         except Exception as e:
@@ -454,7 +506,7 @@ class WebScraperService:
         
         # Try TripAdvisor as fallback
         try:
-            tripadvisor_result = await self._scrape_tripadvisor(search_query, hotel_name)
+            tripadvisor_result = await self._scrape_tripadvisor(search_query, hotel_name, min_rooms)
             if tripadvisor_result["success"]:
                 return tripadvisor_result
         except Exception as e:
@@ -462,7 +514,7 @@ class WebScraperService:
         
         return result
     
-    async def _scrape_city_booking_aggregator(self, hotel_name: str, city: str) -> Dict[str, Any]:
+    async def _scrape_city_booking_aggregator(self, hotel_name: str, city: str, min_rooms: int) -> Dict[str, Any]:
         """
         Try city-specific booking aggregator sites like hotels-birmingham.net.
         These sites often have reliable room count information for hotels.
@@ -556,12 +608,12 @@ class WebScraperService:
                     for match in matches:
                         try:
                             count = int(match)
-                            # For small numbers (under 20), require more context - skip them
-                            # as they're likely "room types" not "total rooms"
-                            if count < 20:
-                                logger.debug(f"Skipping low room count {count} - likely room types not total")
+                            # Use dynamic threshold based on hotel type
+                            # Chains need higher count, independents can be smaller
+                            if count < min_rooms:
+                                logger.debug(f"Skipping room count {count} - below min threshold of {min_rooms}")
                                 continue
-                            if 20 <= count <= 2000:  # Reasonable room count for total
+                            if min_rooms <= count <= 2000:  # Reasonable room count for total
                                 result["rooms_min"] = count
                                 result["rooms_max"] = count
                                 result["source"] = url
@@ -584,7 +636,7 @@ class WebScraperService:
         
         return result
     
-    async def _scrape_booking_com(self, search_query: str, hotel_name: str) -> Dict[str, Any]:
+    async def _scrape_booking_com(self, search_query: str, hotel_name: str, min_rooms: int) -> Dict[str, Any]:
         """Scrape Booking.com for hotel room information"""
         result = {"success": False, "rooms_min": None, "rooms_max": None, "source": None, "source_notes": None, "phone": None}
         
@@ -614,11 +666,11 @@ class WebScraperService:
             if matches:
                 for match in matches:
                     count = int(match)
-                    # Skip small numbers - likely "room types available" not total rooms
-                    if count < 20:
-                        logger.debug(f"Skipping low room count {count} from Booking.com - likely room types")
+                    # Use dynamic threshold based on hotel type
+                    if count < min_rooms:
+                        logger.debug(f"Skipping room count {count} from Booking.com - below min threshold of {min_rooms}")
                         continue
-                    if 20 <= count <= 2000:  # Reasonable total room count
+                    if min_rooms <= count <= 2000:  # Reasonable total room count
                         result["rooms_min"] = count
                         result["rooms_max"] = count
                         result["source"] = "Booking.com"
@@ -629,7 +681,7 @@ class WebScraperService:
         
         return result
     
-    async def _scrape_tripadvisor(self, search_query: str, hotel_name: str) -> Dict[str, Any]:
+    async def _scrape_tripadvisor(self, search_query: str, hotel_name: str, min_rooms: int) -> Dict[str, Any]:
         """Scrape TripAdvisor for hotel room information"""
         result = {"success": False, "rooms_min": None, "rooms_max": None, "source": None, "source_notes": None, "phone": None}
         
@@ -656,11 +708,11 @@ class WebScraperService:
             if matches:
                 for match in matches:
                     count = int(match)
-                    # Skip small numbers - likely "room types" not total
-                    if count < 20:
-                        logger.debug(f"Skipping low room count {count} from TripAdvisor - likely room types")
+                    # Use dynamic threshold based on hotel type
+                    if count < min_rooms:
+                        logger.debug(f"Skipping room count {count} from TripAdvisor - below min threshold of {min_rooms}")
                         continue
-                    if 20 <= count <= 2000:
+                    if min_rooms <= count <= 2000:
                         result["rooms_min"] = count
                         result["rooms_max"] = count
                         result["source"] = "TripAdvisor"

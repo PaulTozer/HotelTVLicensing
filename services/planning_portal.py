@@ -421,56 +421,97 @@ class PlanningPortalService:
         postcode: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Search for planning applications via DuckDuckGo.
-        Looks for planning portal pages that mention the hotel and room counts.
+        Search for planning applications via web search.
+        Uses Azure Bing Search API if configured, otherwise falls back to DuckDuckGo.
         """
-        from duckduckgo_search import DDGS
+        from config import AZURE_BING_SEARCH_KEY, AZURE_BING_SEARCH_ENDPOINT, USE_AZURE_BING_SEARCH
         
         # Build search query
         location = city or postcode or ""
         query = f'"{hotel_name}" planning application hotel rooms {location}'
         
-        try:
-            ddgs = DDGS()
-            results = ddgs.text(query, max_results=5)
-            
-            for result in results:
-                url = result.get('href', '')
-                title = result.get('title', '').lower()
-                body = result.get('body', '').lower()
+        results = []
+        
+        # Try Azure Bing Search API first (if configured)
+        if USE_AZURE_BING_SEARCH:
+            try:
+                headers = {'Ocp-Apim-Subscription-Key': AZURE_BING_SEARCH_KEY}
+                params = {'q': query, 'count': 5, 'mkt': 'en-GB'}
                 
-                # Check if this looks like a planning portal result
-                planning_indicators = [
-                    'planning', 'application', 'publicaccess', 
-                    'online-applications', 'council', 'gov.uk'
-                ]
+                response = self.http_client.get(
+                    AZURE_BING_SEARCH_ENDPOINT,
+                    headers=headers,
+                    params=params
+                )
+                response.raise_for_status()
                 
-                if not any(ind in url.lower() or ind in title for ind in planning_indicators):
-                    continue
+                data = response.json()
+                web_pages = data.get('webPages', {}).get('value', [])
                 
-                # Check the result text for room count mentions
-                combined_text = f"{title} {body}"
-                room_count = self._extract_room_count_from_text(combined_text, hotel_name)
-                
-                if room_count:
-                    logger.info(f"Found room count {room_count} in web search result: {url}")
-                    return {
-                        'room_count': room_count,
-                        'source_url': url,
-                        'source': 'planning_portal_search',
-                        'notes': 'Room count found via web search of planning records'
-                    }
-                
-                # Try fetching the page for more details
-                try:
-                    page_result = await self._extract_room_count_from_application(url, hotel_name)
-                    if page_result:
-                        return page_result
-                except Exception:
-                    continue
+                for item in web_pages:
+                    results.append({
+                        'href': item.get('url', ''),
+                        'title': item.get('name', ''),
+                        'body': item.get('snippet', '')
+                    })
                     
-        except Exception as e:
-            logger.warning(f"Web search for planning applications failed: {e}")
+                logger.info(f"Azure Bing API returned {len(results)} planning search results")
+                
+            except Exception as e:
+                logger.warning(f"Azure Bing Search failed for planning portal: {e}")
+        
+        # Fallback to DuckDuckGo
+        if not results:
+            try:
+                from duckduckgo_search import DDGS
+                ddgs = DDGS()
+                ddg_results = ddgs.text(query, max_results=5)
+                
+                for result in ddg_results:
+                    results.append({
+                        'href': result.get('href', ''),
+                        'title': result.get('title', ''),
+                        'body': result.get('body', '')
+                    })
+                    
+            except Exception as e:
+                logger.warning(f"DuckDuckGo search for planning applications failed: {e}")
+        
+        # Process results
+        for result in results:
+            url = result.get('href', '')
+            title = result.get('title', '').lower()
+            body = result.get('body', '').lower()
+            
+            # Check if this looks like a planning portal result
+            planning_indicators = [
+                'planning', 'application', 'publicaccess', 
+                'online-applications', 'council', 'gov.uk'
+            ]
+            
+            if not any(ind in url.lower() or ind in title for ind in planning_indicators):
+                continue
+            
+            # Check the result text for room count mentions
+            combined_text = f"{title} {body}"
+            room_count = self._extract_room_count_from_text(combined_text, hotel_name)
+            
+            if room_count:
+                logger.info(f"Found room count {room_count} in web search result: {url}")
+                return {
+                    'room_count': room_count,
+                    'source_url': url,
+                    'source': 'planning_portal_search',
+                    'notes': 'Room count found via web search of planning records'
+                }
+            
+            # Try fetching the page for more details
+            try:
+                page_result = await self._extract_room_count_from_application(url, hotel_name)
+                if page_result:
+                    return page_result
+            except Exception:
+                continue
         
         return None
     

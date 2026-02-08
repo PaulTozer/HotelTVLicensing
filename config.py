@@ -14,6 +14,11 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")
 AZURE_OPENAI_FALLBACK_DEPLOYMENT = os.getenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", "gpt-4.1-mini")
 
+# Azure Bing Search Configuration (optional - preferred search provider)
+AZURE_BING_SEARCH_ENDPOINT = os.getenv("AZURE_BING_SEARCH_ENDPOINT", "https://api.bing.microsoft.com/v7.0/search")
+AZURE_BING_SEARCH_KEY = os.getenv("AZURE_BING_SEARCH_KEY")
+USE_AZURE_BING_SEARCH = bool(AZURE_BING_SEARCH_KEY)
+
 # Determine which AI provider to use
 USE_AZURE_OPENAI = bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)
 

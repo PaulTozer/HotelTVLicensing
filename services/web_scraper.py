@@ -539,13 +539,16 @@ class WebScraperService:
                     continue
                 
                 # Look for room count - these aggregators often have "X rooms" prominently displayed
+                # Be careful to avoid matching "6 room types" or "6 rooms available tonight"
                 room_patterns = [
-                    r'(\d+)\s*rooms?(?:\s|$)',
-                    r'rooms?\s*[:\s]*(\d+)',
-                    r'(\d+)\s*(?:guest\s+)?rooms?',
-                    r'(?:hotel\s+)?(?:has|with|featuring)\s+(\d+)\s*rooms?',
+                    # Total room count patterns (most reliable)
+                    r'(?:total\s+(?:of\s+)?)?(\d+)\s*(?:guest\s+)?rooms?\s+(?:in\s+)?total',
+                    r'(?:hotel|property)\s+(?:has|with|features?|offers?)\s+(\d+)\s*(?:guest\s+)?rooms?',
+                    r'(\d+)\s*(?:guest\s+)?rooms?\s+(?:hotel|property)',
                     r'number\s+of\s+rooms?\s*[:\s]*(\d+)',
-                    r'(\d+)\s+(?:comfortable|spacious|luxury)\s+rooms?',
+                    r'(\d+)\s+(?:comfortable|spacious|luxury|stylish|modern)\s+(?:guest\s+)?rooms?',
+                    # Pattern for "250 rooms" when it's a larger number (likely total)
+                    r'(?:^|\s)(\d{2,})\s*(?:guest\s+)?rooms?(?:\s|$|,|\.)',
                 ]
                 
                 for pattern in room_patterns:
@@ -553,7 +556,12 @@ class WebScraperService:
                     for match in matches:
                         try:
                             count = int(match)
-                            if 3 <= count <= 1000:  # Reasonable room count
+                            # For small numbers (under 20), require more context - skip them
+                            # as they're likely "room types" not "total rooms"
+                            if count < 20:
+                                logger.debug(f"Skipping low room count {count} - likely room types not total")
+                                continue
+                            if 20 <= count <= 2000:  # Reasonable room count for total
                                 result["rooms_min"] = count
                                 result["rooms_max"] = count
                                 result["source"] = url
@@ -591,12 +599,14 @@ class WebScraperService:
         text = self.extract_text_content(html)
         
         # Look for room count patterns in Booking.com format
+        # Be careful to avoid matching "6 room types" or availability numbers
         patterns = [
-            r'(\d+)\s*rooms?\s*(?:in\s+)?(?:total|available)',
+            r'(?:total\s+(?:of\s+)?)?(\d+)\s*rooms?\s+(?:in\s+)?total',
             r'property\s+has\s+(\d+)\s*rooms?',
             r'(\d+)-room\s+(?:hotel|property)',
             r'featuring\s+(\d+)\s*(?:guest)?\s*rooms?',
             r'with\s+(\d+)\s*(?:en-suite)?\s*rooms?',
+            r'(?:hotel|property)\s+(?:offers?|has)\s+(\d+)\s*rooms?',
         ]
         
         for pattern in patterns:
@@ -604,7 +614,11 @@ class WebScraperService:
             if matches:
                 for match in matches:
                     count = int(match)
-                    if 3 <= count <= 1000:  # Reasonable room count
+                    # Skip small numbers - likely "room types available" not total rooms
+                    if count < 20:
+                        logger.debug(f"Skipping low room count {count} from Booking.com - likely room types")
+                        continue
+                    if 20 <= count <= 2000:  # Reasonable total room count
                         result["rooms_min"] = count
                         result["rooms_max"] = count
                         result["source"] = "Booking.com"
@@ -629,11 +643,12 @@ class WebScraperService:
         
         text = self.extract_text_content(html)
         
-        # TripAdvisor patterns
+        # TripAdvisor patterns - look for explicit room counts
         patterns = [
             r'NUMBER\s+OF\s+ROOMS\s*[:\s]*(\d+)',
             r'(\d+)\s*rooms?\s*(?:total|in\s+hotel)',
             r'(?:^|\s)rooms?\s*[:\s]*(\d+)(?:\s|$)',
+            r'(?:hotel|property)\s+(?:has|with)\s+(\d+)\s*rooms?',
         ]
         
         for pattern in patterns:
@@ -641,7 +656,11 @@ class WebScraperService:
             if matches:
                 for match in matches:
                     count = int(match)
-                    if 3 <= count <= 1000:
+                    # Skip small numbers - likely "room types" not total
+                    if count < 20:
+                        logger.debug(f"Skipping low room count {count} from TripAdvisor - likely room types")
+                        continue
+                    if 20 <= count <= 2000:
                         result["rooms_min"] = count
                         result["rooms_max"] = count
                         result["source"] = "TripAdvisor"

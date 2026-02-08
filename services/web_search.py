@@ -9,7 +9,7 @@ from duckduckgo_search import DDGS
 from duckduckgo_search.exceptions import RatelimitException, DuckDuckGoSearchException
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import SEARCH_MAX_RETRIES, AZURE_BING_SEARCH_KEY, AZURE_BING_SEARCH_ENDPOINT, USE_AZURE_BING_SEARCH
+from config import SEARCH_MAX_RETRIES
 
 logger = logging.getLogger(__name__)
 
@@ -43,9 +43,6 @@ class WebSearchService:
         self.http_client = httpx.Client(timeout=30.0)
         self._ddg_rate_limited = False
         self._ddg_rate_limit_until = 0
-        self._use_bing_api = USE_AZURE_BING_SEARCH
-        if self._use_bing_api:
-            logger.info("Azure Bing Search API configured as primary search provider")
     
     def _build_search_query(self, name: str, address: Optional[str] = None, 
                             city: Optional[str] = None, postcode: Optional[str] = None) -> str:
@@ -71,12 +68,6 @@ class WebSearchService:
         """
         Search for a hotel's official website with fallback providers.
         
-        Priority order:
-        1. Azure Bing Search API (if configured) - most reliable, paid service
-        2. DuckDuckGo (free, but rate limited)
-        3. Bing scraping fallback
-        4. Direct URL construction
-        
         Returns list of search results with title, url, and description
         """
         query = self._build_search_query(name, address, city, postcode)
@@ -97,19 +88,7 @@ class WebSearchService:
         
         results = []
         
-        # Try Azure Bing Search API first (if configured)
-        if self._use_bing_api:
-            try:
-                results = self._search_azure_bing_api(query)
-                if results:
-                    ranked_results = self._rank_results(results, name)
-                    logger.info(f"Azure Bing API returned {len(ranked_results)} results")
-                    if ranked_results:
-                        return ranked_results
-            except Exception as e:
-                logger.warning(f"Azure Bing Search API error: {e}, falling back to DuckDuckGo")
-        
-        # Try DuckDuckGo (unless recently rate limited)
+        # Try DuckDuckGo first (unless recently rate limited)
         import time
         if not self._ddg_rate_limited or time.time() > self._ddg_rate_limit_until:
             try:
@@ -199,65 +178,6 @@ class WebSearchService:
         except Exception as e:
             logger.warning(f"Bing scraping failed: {e}")
             return []
-    
-    def _search_azure_bing_api(self, query: str) -> List[Dict[str, Any]]:
-        """
-        Search using Azure Bing Search API (paid, reliable service).
-        
-        This is the preferred search method when configured as it has:
-        - Higher rate limits
-        - More reliable results
-        - Better quality/relevance
-        """
-        try:
-            headers = {
-                'Ocp-Apim-Subscription-Key': AZURE_BING_SEARCH_KEY,
-            }
-            
-            params = {
-                'q': query,
-                'count': 10,
-                'mkt': 'en-GB',  # UK market for better local results
-                'safeSearch': 'Moderate',
-            }
-            
-            response = self.http_client.get(
-                AZURE_BING_SEARCH_ENDPOINT,
-                headers=headers,
-                params=params
-            )
-            response.raise_for_status()
-            
-            data = response.json()
-            results = []
-            
-            # Parse web pages from response
-            web_pages = data.get('webPages', {}).get('value', [])
-            
-            for item in web_pages:
-                results.append({
-                    'href': item.get('url', ''),
-                    'title': item.get('name', ''),
-                    'body': item.get('snippet', '')
-                })
-            
-            logger.info(f"Azure Bing API returned {len(results)} results")
-            return results
-            
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 401:
-                logger.error("Azure Bing Search API: Invalid subscription key")
-            elif e.response.status_code == 403:
-                logger.error("Azure Bing Search API: Access forbidden - check subscription")
-            elif e.response.status_code == 429:
-                logger.warning("Azure Bing Search API: Rate limited")
-            else:
-                logger.error(f"Azure Bing Search API HTTP error: {e}")
-            raise
-            
-        except Exception as e:
-            logger.error(f"Azure Bing Search API error: {e}")
-            raise
     
     def _rank_results(self, results: List[Dict], hotel_name: str) -> List[Dict[str, Any]]:
         """Rank search results by likelihood of being the official website"""

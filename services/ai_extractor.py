@@ -1,16 +1,20 @@
-"""AI-powered extraction service using OpenAI/Azure OpenAI"""
+"""AI-powered extraction service using OpenAI/Azure OpenAI with rate limit recovery"""
 
 import json
 import logging
+import asyncio
 from typing import Optional, Dict, Any, List
-from openai import OpenAI, AzureOpenAI
+from openai import OpenAI, AzureOpenAI, RateLimitError, APIError
 
 from config import (
     OPENAI_API_KEY, 
     AZURE_OPENAI_ENDPOINT, 
     AZURE_OPENAI_API_KEY,
     AZURE_OPENAI_DEPLOYMENT,
-    USE_AZURE_OPENAI
+    AZURE_OPENAI_FALLBACK_DEPLOYMENT,
+    USE_AZURE_OPENAI,
+    AI_MAX_RETRIES,
+    AI_RETRY_DELAY_BASE
 )
 
 logger = logging.getLogger(__name__)
@@ -55,6 +59,7 @@ Respond in valid JSON format with this exact structure:
     def __init__(self):
         self.client = None
         self.model = "gpt-4o-mini"  # Cost-effective and capable
+        self.fallback_model = None  # Fallback for rate limits
         
         if USE_AZURE_OPENAI:
             self.client = AzureOpenAI(
@@ -63,7 +68,8 @@ Respond in valid JSON format with this exact structure:
                 api_version="2024-02-15-preview"
             )
             self.model = AZURE_OPENAI_DEPLOYMENT
-            logger.info("Using Azure OpenAI")
+            self.fallback_model = AZURE_OPENAI_FALLBACK_DEPLOYMENT
+            logger.info(f"Using Azure OpenAI: {self.model} (fallback: {self.fallback_model})")
         elif OPENAI_API_KEY:
             self.client = OpenAI(api_key=OPENAI_API_KEY)
             logger.info("Using OpenAI")
@@ -92,6 +98,7 @@ Respond in valid JSON format with this exact structure:
     ) -> Dict[str, Any]:
         """
         Use AI to extract structured hotel information from scraped content
+        with retry logic and fallback model support.
         
         Args:
             hotel_name: Name of the hotel being searched
@@ -118,29 +125,64 @@ Pre-extracted Room Count Mentions:
 Website Content:
 {website_content[:12000]}"""  # Limit content length for API
 
-        try:
-            response = self.client.chat.completions.create(
-                model=self.model,
-                messages=[
-                    {"role": "system", "content": self.EXTRACTION_PROMPT},
-                    {"role": "user", "content": context}
-                ],
-                max_completion_tokens=500,
-                response_format={"type": "json_object"}
-            )
+        # Try with retry logic
+        last_error = None
+        models_to_try = [self.model]
+        if self.fallback_model and self.fallback_model != self.model:
+            models_to_try.append(self.fallback_model)
+        
+        for model in models_to_try:
+            for attempt in range(AI_MAX_RETRIES):
+                try:
+                    response = self.client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {"role": "system", "content": self.EXTRACTION_PROMPT},
+                            {"role": "user", "content": context}
+                        ],
+                        max_completion_tokens=500,
+                        response_format={"type": "json_object"}
+                    )
+                    
+                    result_text = response.choices[0].message.content
+                    result = json.loads(result_text)
+                    
+                    logger.info(f"AI extraction complete for {hotel_name} using {model}: confidence={result.get('confidence')}")
+                    return result
+                    
+                except RateLimitError as e:
+                    last_error = e
+                    wait_time = AI_RETRY_DELAY_BASE * (2 ** attempt)
+                    logger.warning(f"Rate limit hit on {model} (attempt {attempt + 1}/{AI_MAX_RETRIES}), waiting {wait_time}s...")
+                    await asyncio.sleep(wait_time)
+                    
+                except APIError as e:
+                    last_error = e
+                    if "429" in str(e) or "rate" in str(e).lower():
+                        wait_time = AI_RETRY_DELAY_BASE * (2 ** attempt)
+                        logger.warning(f"API rate error on {model} (attempt {attempt + 1}/{AI_MAX_RETRIES}), waiting {wait_time}s...")
+                        await asyncio.sleep(wait_time)
+                    else:
+                        logger.error(f"API error on {model}: {e}")
+                        break  # Non-rate-limit error, try next model
+                        
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse AI response from {model}: {e}")
+                    last_error = e
+                    break  # JSON error, try next model
+                    
+                except Exception as e:
+                    logger.error(f"Unexpected error with {model}: {e}")
+                    last_error = e
+                    break  # Unknown error, try next model
             
-            result_text = response.choices[0].message.content
-            result = json.loads(result_text)
-            
-            logger.info(f"AI extraction complete for {hotel_name}: confidence={result.get('confidence')}")
-            return result
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse AI response: {e}")
-            return self._fallback_extraction(phone_candidates, room_candidates)
-        except Exception as e:
-            logger.error(f"AI extraction error: {e}")
-            return self._fallback_extraction(phone_candidates, room_candidates)
+            # If we exhausted retries on this model, try the next one
+            if models_to_try.index(model) < len(models_to_try) - 1:
+                logger.info(f"Switching from {model} to fallback model {models_to_try[models_to_try.index(model) + 1]}")
+        
+        # All models failed
+        logger.error(f"All AI extraction attempts failed for {hotel_name}: {last_error}")
+        return self._fallback_extraction(phone_candidates, room_candidates)
     
     def _fallback_extraction(
         self,

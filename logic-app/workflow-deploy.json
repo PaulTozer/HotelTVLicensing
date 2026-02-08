@@ -1,0 +1,50 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "schema": {
+            "type": "object",
+            "properties": {
+              "hotels": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "name": { "type": "string" },
+                    "address": { "type": "string" }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "actions": {
+      "Call_Batch_API": {
+        "type": "Http",
+        "inputs": {
+          "method": "POST",
+          "uri": "https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io/api/v1/hotel/batch",
+          "headers": { "Content-Type": "application/json" },
+          "body": { "hotels": "@triggerBody()?['hotels']" }
+        },
+        "runAfter": {}
+      },
+      "Response": {
+        "type": "Response",
+        "kind": "Http",
+        "inputs": {
+          "statusCode": 200,
+          "body": "@body('Call_Batch_API')"
+        },
+        "runAfter": { "Call_Batch_API": ["Succeeded"] }
+      }
+    }
+  }
+}

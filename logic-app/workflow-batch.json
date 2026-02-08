@@ -1,0 +1,214 @@
+{
+  "definition": {
+    "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+    "contentVersion": "1.0.0.0",
+    "parameters": {
+      "$connections": {
+        "defaultValue": {},
+        "type": "Object"
+      }
+    },
+    "triggers": {
+      "manual": {
+        "type": "Request",
+        "kind": "Http",
+        "inputs": {
+          "schema": {
+            "type": "object",
+            "properties": {
+              "batchSize": {
+                "type": "integer",
+                "description": "Number of hotels per batch (default 20)"
+              }
+            }
+          }
+        }
+      }
+    },
+    "actions": {
+      "Initialize_All_Results": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "AllResults",
+              "type": "array",
+              "value": []
+            }
+          ]
+        },
+        "runAfter": {}
+      },
+      "Initialize_Batch_Size": {
+        "type": "InitializeVariable",
+        "inputs": {
+          "variables": [
+            {
+              "name": "BatchSize",
+              "type": "integer",
+              "value": "@coalesce(triggerBody()?['batchSize'], 20)"
+            }
+          ]
+        },
+        "runAfter": {
+          "Initialize_All_Results": ["Succeeded"]
+        }
+      },
+      "Get_Excel_Rows": {
+        "type": "ApiConnection",
+        "inputs": {
+          "host": {
+            "connection": {
+              "name": "@parameters('$connections')['excelonlinebusiness']['connectionId']"
+            }
+          },
+          "method": "get",
+          "path": "/codeless/v1.0/drives/@{encodeURIComponent('YOUR_DRIVE_ID')}/items/@{encodeURIComponent('YOUR_FILE_ID')}/workbook/tables/@{encodeURIComponent('Hotels')}/rows"
+        },
+        "runAfter": {
+          "Initialize_Batch_Size": ["Succeeded"]
+        }
+      },
+      "Build_Hotels_Array": {
+        "type": "Select",
+        "inputs": {
+          "from": "@body('Get_Excel_Rows')?['value']",
+          "select": {
+            "name": "@item()?['values'][0]",
+            "address": "@concat(coalesce(item()?['values'][1], ''), ', ', coalesce(item()?['values'][2], ''))",
+            "city": "@item()?['values'][2]",
+            "postcode": "@item()?['values'][3]"
+          }
+        },
+        "runAfter": {
+          "Get_Excel_Rows": ["Succeeded"]
+        }
+      },
+      "Chunk_Into_Batches": {
+        "type": "Compose",
+        "inputs": "@chunk(body('Build_Hotels_Array'), variables('BatchSize'))",
+        "runAfter": {
+          "Build_Hotels_Array": ["Succeeded"]
+        }
+      },
+      "Process_Each_Batch": {
+        "type": "Foreach",
+        "foreach": "@outputs('Chunk_Into_Batches')",
+        "actions": {
+          "Call_Batch_API": {
+            "type": "Http",
+            "inputs": {
+              "method": "POST",
+              "uri": "https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io/api/v1/hotel/batch",
+              "headers": {
+                "Content-Type": "application/json"
+              },
+              "body": {
+                "hotels": "@items('Process_Each_Batch')"
+              }
+            },
+            "runAfter": {}
+          },
+          "Append_Batch_Results": {
+            "type": "AppendToArrayVariable",
+            "inputs": {
+              "name": "AllResults",
+              "value": "@body('Call_Batch_API')?['results']"
+            },
+            "runAfter": {
+              "Call_Batch_API": ["Succeeded"]
+            }
+          }
+        },
+        "runAfter": {
+          "Chunk_Into_Batches": ["Succeeded"]
+        },
+        "runtimeConfiguration": {
+          "concurrency": {
+            "repetitions": 1
+          }
+        }
+      },
+      "Flatten_Results": {
+        "type": "Compose",
+        "inputs": "@flatten(variables('AllResults'))",
+        "runAfter": {
+          "Process_Each_Batch": ["Succeeded"]
+        }
+      },
+      "Create_Output_CSV": {
+        "type": "Table",
+        "inputs": {
+          "from": "@outputs('Flatten_Results')",
+          "format": "CSV",
+          "columns": [
+            { "header": "Hotel Name", "value": "@item()?['search_name']" },
+            { "header": "Address", "value": "@item()?['search_address']" },
+            { "header": "Rooms Min", "value": "@item()?['rooms_min']" },
+            { "header": "Rooms Max", "value": "@item()?['rooms_max']" },
+            { "header": "Official Website", "value": "@item()?['official_website']" },
+            { "header": "UK Phone", "value": "@item()?['uk_contact_phone']" },
+            { "header": "Status", "value": "@item()?['status']" },
+            { "header": "Confidence", "value": "@item()?['confidence_score']" },
+            { "header": "Room Source Notes", "value": "@item()?['rooms_source_notes']" }
+          ]
+        },
+        "runAfter": {
+          "Flatten_Results": ["Succeeded"]
+        }
+      },
+      "Create_Output_File": {
+        "type": "ApiConnection",
+        "inputs": {
+          "host": {
+            "connection": {
+              "name": "@parameters('$connections')['onedriveforbusiness']['connectionId']"
+            }
+          },
+          "method": "post",
+          "path": "/datasets/default/files",
+          "queries": {
+            "folderPath": "/Hotel Results",
+            "name": "HotelResults_@{formatDateTime(utcNow(), 'yyyy-MM-dd_HHmmss')}.csv"
+          },
+          "body": "@body('Create_Output_CSV')"
+        },
+        "runAfter": {
+          "Create_Output_CSV": ["Succeeded"]
+        }
+      },
+      "Response": {
+        "type": "Response",
+        "kind": "Http",
+        "inputs": {
+          "statusCode": 200,
+          "body": {
+            "total_processed": "@length(outputs('Flatten_Results'))",
+            "successful": "@length(filter(outputs('Flatten_Results'), item => item?['status'] == 'success'))",
+            "output_file": "@body('Create_Output_File')?['Path']",
+            "results": "@outputs('Flatten_Results')"
+          }
+        },
+        "runAfter": {
+          "Create_Output_File": ["Succeeded"]
+        }
+      }
+    }
+  },
+  "parameters": {
+    "$connections": {
+      "value": {
+        "excelonlinebusiness": {
+          "connectionId": "/subscriptions/{subscription-id}/resourceGroups/{resource-group}/providers/Microsoft.Web/connections/excelonlinebusiness",
+          "connectionName": "excelonlinebusiness",
+          "id": "/subscriptions/{subscription-id}/providers/Microsoft.Web/locations/{location}/managedApis/excelonlinebusiness"
+        },
+        "onedriveforbusiness": {
+          "connectionId": "/subscriptions/{subscription-id}/resourceGroups/{resource-group}/providers/Microsoft.Web/connections/onedriveforbusiness",
+          "connectionName": "onedriveforbusiness", 
+          "id": "/subscriptions/{subscription-id}/providers/Microsoft.Web/locations/{location}/managedApis/onedriveforbusiness"
+        }
+      }
+    }
+  }
+}

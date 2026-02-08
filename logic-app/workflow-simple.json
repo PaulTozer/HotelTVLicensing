@@ -1,0 +1,113 @@
+{
+  "$schema": "https://schema.management.azure.com/providers/Microsoft.Logic/schemas/2016-06-01/workflowdefinition.json#",
+  "contentVersion": "1.0.0.0",
+  "triggers": {
+    "manual": {
+      "type": "Request",
+      "kind": "Http",
+      "inputs": {
+        "schema": {
+          "type": "object",
+          "properties": {
+            "hotels": {
+              "type": "array",
+              "items": {
+                "type": "object",
+                "properties": {
+                  "name": { "type": "string" },
+                  "address": { "type": "string" }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "actions": {
+    "Initialize_Results": {
+      "type": "InitializeVariable",
+      "inputs": {
+        "variables": [
+          {
+            "name": "Results",
+            "type": "array",
+            "value": []
+          }
+        ]
+      },
+      "runAfter": {}
+    },
+    "Check_If_Hotels_Provided": {
+      "type": "If",
+      "expression": {
+        "and": [
+          {
+            "greater": [
+              "@length(coalesce(triggerBody()?['hotels'], json('[]')))",
+              0
+            ]
+          }
+        ]
+      },
+      "actions": {
+        "Call_Batch_API": {
+          "type": "Http",
+          "inputs": {
+            "method": "POST",
+            "uri": "https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io/api/v1/hotel/batch",
+            "headers": {
+              "Content-Type": "application/json"
+            },
+            "body": {
+              "hotels": "@triggerBody()?['hotels']"
+            }
+          },
+          "runAfter": {}
+        },
+        "Set_Results_From_Batch": {
+          "type": "SetVariable",
+          "inputs": {
+            "name": "Results",
+            "value": "@body('Call_Batch_API')?['results']"
+          },
+          "runAfter": {
+            "Call_Batch_API": ["Succeeded"]
+          }
+        }
+      },
+      "else": {
+        "actions": {
+          "Set_Empty_Results": {
+            "type": "SetVariable",
+            "inputs": {
+              "name": "Results",
+              "value": []
+            },
+            "runAfter": {}
+          }
+        }
+      },
+      "runAfter": {
+        "Initialize_Results": ["Succeeded"]
+      }
+    },
+    "Response": {
+      "type": "Response",
+      "kind": "Http",
+      "inputs": {
+        "statusCode": 200,
+        "headers": {
+          "Content-Type": "application/json"
+        },
+        "body": {
+          "total_processed": "@length(variables('Results'))",
+          "results": "@variables('Results')"
+        }
+      },
+      "runAfter": {
+        "Check_If_Hotels_Provided": ["Succeeded"]
+      }
+    }
+  }
+}

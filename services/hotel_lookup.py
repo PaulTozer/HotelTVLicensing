@@ -8,6 +8,7 @@ from models import HotelSearchRequest, HotelInfoResponse, StatusEnum
 from .web_search import WebSearchService
 from .web_scraper import WebScraperService
 from .ai_extractor import AIExtractorService
+from .planning_portal import PlanningPortalService
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,7 @@ class HotelLookupService:
         self.search_service = WebSearchService()
         self.scraper_service = WebScraperService()
         self.ai_service = AIExtractorService()
+        self.planning_service = PlanningPortalService()
     
     async def lookup_hotel(self, request: HotelSearchRequest) -> HotelInfoResponse:
         """
@@ -162,7 +164,7 @@ class HotelLookupService:
                 response.status = StatusEnum.PARTIAL
                 response.errors.append("Could not extract room count or phone number from website")
                 
-                # Try booking sites as last resort for room count
+                # Try booking sites as fallback for room count
                 if not response.rooms_min:
                     booking_result = await self._try_booking_sites(request)
                     if booking_result:
@@ -170,6 +172,14 @@ class HotelLookupService:
                         if response.rooms_min:
                             response.status = StatusEnum.PARTIAL
                             response.errors.append(f"Room count sourced from {booking_result.get('source', 'booking site')}")
+                
+                # Last resort: try planning portal for room count
+                if not response.rooms_min:
+                    planning_result = await self._try_planning_portal(request)
+                    if planning_result:
+                        self._apply_planning_result(response, planning_result)
+                        if response.rooms_min:
+                            response.errors.append(f"Room count sourced from planning portal")
             
             logger.info(f"Lookup complete for {request.name}: status={response.status}")
             return response
@@ -268,3 +278,32 @@ class HotelLookupService:
         if booking_result.get("phone") and not response.uk_contact_phone:
             response.uk_contact_phone = booking_result["phone"]
             response.phone_source_url = booking_result.get("source", "Booking site")
+    
+    async def _try_planning_portal(self, request: HotelSearchRequest) -> Optional[dict]:
+        """
+        Last resort: Try to find room count from local council planning portal.
+        Planning applications often contain room counts in their descriptions.
+        """
+        try:
+            logger.info(f"Trying planning portal for room count: {request.name}")
+            result = await self.planning_service.search_planning_portal(
+                hotel_name=request.name,
+                address=request.address,
+                city=request.city,
+                postcode=request.postcode
+            )
+            if result and result.get("room_count"):
+                return result
+        except Exception as e:
+            logger.warning(f"Planning portal lookup failed: {e}")
+        return None
+    
+    def _apply_planning_result(self, response: HotelInfoResponse, planning_result: dict):
+        """Apply results from planning portal to the response"""
+        if planning_result.get("room_count"):
+            response.rooms_min = planning_result["room_count"]
+            response.rooms_max = planning_result["room_count"]
+            notes = planning_result.get("notes", "Found in planning application")
+            response.rooms_source_notes = f"Planning portal: {notes}"
+            if planning_result.get("source_url"):
+                response.rooms_source_notes += f" ({planning_result['source_url']})"

@@ -14,6 +14,9 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")
 AZURE_OPENAI_FALLBACK_DEPLOYMENT = os.getenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", "gpt-4.1-mini")
 
+# SerpAPI Configuration (for reliable Google search)
+SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
+
 # Determine which AI provider to use
 USE_AZURE_OPENAI = bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)
 

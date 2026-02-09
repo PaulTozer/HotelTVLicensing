@@ -98,7 +98,18 @@ class WebSearchService:
         
         results = []
         
-        # Try SerpAPI first (most reliable)
+        # FIRST: Try Google Hotels API via SerpAPI - best for official website discovery
+        # Google Hotels often has the official hotel website directly in the property listing
+        if SERPAPI_AVAILABLE:
+            try:
+                google_hotels_result = self._search_google_hotels_for_website(name, effective_city)
+                if google_hotels_result:
+                    logger.info(f"Google Hotels found official website for '{name}'")
+                    return google_hotels_result
+            except Exception as e:
+                logger.warning(f"Google Hotels API error: {e}")
+        
+        # Try SerpAPI Google Search next (most reliable general search)
         if SERPAPI_AVAILABLE:
             try:
                 results = self._search_serpapi(query)
@@ -187,6 +198,223 @@ class WebSearchService:
         except Exception as e:
             logger.warning(f"SerpAPI search failed: {e}")
             return []
+    
+    def _search_google_hotels_for_website(self, hotel_name: str, city: Optional[str] = None) -> Optional[List[Dict[str, Any]]]:
+        """
+        Search Google Hotels via SerpAPI to find the official hotel website.
+        Google Hotels often has the official website URL directly in the property listing,
+        which is more reliable than searching for it via web search.
+        
+        Returns a list with single result containing the official website, or None if not found.
+        """
+        from datetime import datetime, timedelta
+        
+        try:
+            query = hotel_name
+            if city:
+                query = f"{hotel_name} {city}"
+            
+            # Google Hotels API requires check-in/check-out dates
+            # Use tomorrow and day after for the search (dates don't matter for finding the hotel)
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            day_after = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+            
+            params = {
+                "engine": "google_hotels",
+                "q": query,
+                "api_key": SERPAPI_API_KEY,
+                "gl": "uk",
+                "hl": "en",
+                "currency": "GBP",
+                "check_in_date": tomorrow,
+                "check_out_date": day_after,
+                "adults": 2,
+            }
+            
+            logger.info(f"Searching Google Hotels for official website: {query} (dates: {tomorrow} to {day_after})")
+            search = GoogleSearch(params)
+            results = search.get_dict()
+            
+            # Check for errors in response
+            if "error" in results:
+                logger.warning(f"Google Hotels API error: {results.get('error')}")
+                return None
+            
+            # Log some metadata to help debug
+            search_info = results.get("search_information", {})
+            logger.info(f"Google Hotels search info: {search_info}")
+            
+            # Check if this is a single property details response (exact hotel name match)
+            # When the query matches exactly, Google returns property details at root level
+            hotels_results_state = search_info.get("hotels_results_state", "")
+            
+            if hotels_results_state == "Showing results for property details":
+                # Single property match - data is at root level, not in properties array
+                logger.info(f"Google Hotels returned single property details for exact match")
+                
+                # Extract official website from root level
+                official_website = None
+                
+                # Check 'link' field at root level
+                link = results.get("link")
+                if link:
+                    aggregator_domains = ['booking.com', 'expedia.', 'hotels.com', 'tripadvisor.', 
+                                          'google.com', 'agoda.', 'kayak.', 'trivago.', 'priceline.']
+                    is_aggregator = any(agg in link.lower() for agg in aggregator_domains)
+                    if not is_aggregator:
+                        official_website = link
+                        logger.info(f"Found official website from single property result: {official_website}")
+                
+                # Check 'website' field at root level
+                if not official_website:
+                    website = results.get("website")
+                    if website:
+                        official_website = website
+                        logger.info(f"Found official website from website field: {official_website}")
+                
+                if official_website:
+                    hotel_name_from_results = results.get("name", hotel_name)
+                    return [{
+                        "href": official_website,
+                        "url": official_website,
+                        "title": hotel_name_from_results,
+                        "body": results.get("description", ""),
+                        "is_aggregator": False,
+                        "source": "Google Hotels"
+                    }]
+            
+            # Look for properties in the results - could also be under 'brands' 
+            properties = results.get("properties", [])
+            brands = results.get("brands", [])
+            
+            # Sometimes hotels show up in brands instead of properties
+            if not properties and brands:
+                logger.info(f"No properties but found {len(brands)} brands - using brands")
+                properties = brands
+            
+            if not properties:
+                # Log available keys to understand response structure
+                logger.info(f"No properties found. Response keys: {list(results.keys())}")
+                return None
+            
+            logger.info(f"Google Hotels returned {len(properties)} properties")
+            
+            # Find the best matching property
+            hotel_name_lower = hotel_name.lower()
+            # Remove "the" prefix and "hotel" suffix for better matching
+            clean_name = hotel_name_lower
+            if clean_name.startswith("the "):
+                clean_name = clean_name[4:]
+            if clean_name.endswith(" hotel"):
+                clean_name = clean_name[:-6]
+            clean_name = clean_name.strip()
+            
+            best_match = None
+            
+            for i, prop in enumerate(properties):
+                prop_name = prop.get("name", "").lower()
+                prop_clean = prop_name
+                if prop_clean.startswith("the "):
+                    prop_clean = prop_clean[4:]
+                if prop_clean.endswith(" hotel"):
+                    prop_clean = prop_clean[:-6]
+                prop_clean = prop_clean.strip()
+                
+                logger.debug(f"Google Hotels property {i}: {prop.get('name')} - keys: {list(prop.keys())}")
+                
+                # Check for name match
+                if clean_name in prop_clean or prop_clean in clean_name:
+                    best_match = prop
+                    logger.info(f"Google Hotels exact match: {prop.get('name')}")
+                    break
+                # Check for partial match
+                name_words = clean_name.split()
+                if len(name_words) >= 1:
+                    if all(word in prop_clean for word in name_words):
+                        best_match = prop
+                        logger.info(f"Google Hotels partial match: {prop.get('name')}")
+                        break
+            
+            if not best_match and properties:
+                # Use first result if it contains key words from hotel name
+                first_prop = properties[0]
+                first_name = first_prop.get("name", "").lower()
+                first_clean = first_name
+                if first_clean.startswith("the "):
+                    first_clean = first_clean[4:]
+                    
+                # Check if any significant word matches
+                significant_words = [w for w in clean_name.split() if len(w) > 3]
+                if any(word in first_clean for word in significant_words):
+                    best_match = first_prop
+                    logger.info(f"Using first Google Hotels result (word match): {first_prop.get('name')}")
+            
+            if best_match:
+                logger.info(f"Google Hotels matched: {best_match.get('name')} - available keys: {list(best_match.keys())}")
+                
+                # Extract official website URL
+                # Google Hotels provides this in various fields
+                official_website = None
+                
+                # Check 'link' field - often the official website
+                link = best_match.get("link")
+                if link:
+                    logger.info(f"Google Hotels link field: {link}")
+                    # Filter out booking aggregators
+                    aggregator_domains = ['booking.com', 'expedia.', 'hotels.com', 'tripadvisor.', 
+                                          'google.com', 'agoda.', 'kayak.', 'trivago.', 'priceline.']
+                    is_aggregator = any(agg in link.lower() for agg in aggregator_domains)
+                    if not is_aggregator:
+                        official_website = link
+                        logger.info(f"Found official website from Google Hotels link: {official_website}")
+                    else:
+                        logger.info(f"Link is aggregator, skipping: {link}")
+                
+                # Check 'website' field if no link
+                if not official_website:
+                    website = best_match.get("website")
+                    if website:
+                        official_website = website
+                        logger.info(f"Found official website from Google Hotels website field: {official_website}")
+                
+                # Check 'hotel_link' field
+                if not official_website:
+                    hotel_link = best_match.get("hotel_link")
+                    if hotel_link:
+                        logger.info(f"Google Hotels hotel_link field: {hotel_link}")
+                        aggregator_domains = ['booking.com', 'expedia.', 'hotels.com', 'tripadvisor.', 
+                                              'google.com', 'agoda.', 'kayak.', 'trivago.', 'priceline.']
+                        is_aggregator = any(agg in hotel_link.lower() for agg in aggregator_domains)
+                        if not is_aggregator:
+                            official_website = hotel_link
+                            logger.info(f"Found official website from Google Hotels hotel_link: {official_website}")
+                
+                # Check 'serpapi_property_details_link' - this can be followed for more details
+                if not official_website:
+                    details_link = best_match.get("serpapi_property_details_link")
+                    if details_link:
+                        logger.info(f"No direct website found, but serpapi_property_details_link available: {details_link}")
+                
+                if official_website:
+                    # Return as a search result
+                    return [{
+                        "href": official_website,
+                        "url": official_website,
+                        "title": best_match.get("name", hotel_name),
+                        "body": best_match.get("description", ""),
+                        "is_aggregator": False,
+                        "source": "Google Hotels"
+                    }]
+                else:
+                    logger.info(f"Google Hotels matched {best_match.get('name')} but no official website URL found")
+            else:
+                logger.info(f"No matching property found in Google Hotels for '{hotel_name}'")
+            
+            return None
+            
+        except Exception as e:
+            logger.warning(f"Google Hotels website search failed: {e}")
+            return None
     
     def _search_bing_fallback(self, query: str) -> List[Dict[str, Any]]:
         """

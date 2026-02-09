@@ -65,11 +65,14 @@ class HotelLookupService:
                 official_result = search_results[0]
                 response.errors.append("Could not find official website, using best available result")
             
-            website_url = official_result["url"]
+            website_url = official_result.get("url") or official_result.get("href")
             response.official_website = website_url
-            response.website_source_url = "DuckDuckGo search"
             
-            logger.info(f"Found website: {website_url}")
+            # Note the source - could be Google Hotels, SerpAPI, or DuckDuckGo
+            source = official_result.get("source", "Web search")
+            response.website_source_url = source
+            
+            logger.info(f"Found website: {website_url} (source: {source})")
             
             # Step 2: Scrape the website
             scrape_result = await self.scraper_service.deep_scrape_hotel(website_url)

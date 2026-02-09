@@ -140,12 +140,6 @@ uvicorn main:app --reload
 - **Swagger UI**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/health
 
-### Deployed Instance
-
-The API is deployed on Azure Container Apps:
-- **Base URL**: `https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io`
-- **Swagger UI**: `https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io/docs`
-
 ## API Endpoints
 
 ### Single Hotel Lookup

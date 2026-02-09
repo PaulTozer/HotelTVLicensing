@@ -538,14 +538,18 @@ class WebScraperService:
         """
         Search Google Hotels via SerpAPI to get hotel information including room count.
         Google Hotels often has structured data including number of rooms under essential_info.
+        It also typically includes the official hotel website URL which we can scrape.
         """
+        from datetime import datetime, timedelta
+        
         result = {
             "success": False, 
             "rooms_min": None, 
             "rooms_max": None, 
             "source": None, 
             "source_notes": None, 
-            "phone": None
+            "phone": None,
+            "official_website": None
         }
         
         if not SERPAPI_AVAILABLE:
@@ -562,6 +566,10 @@ class WebScraperService:
                 if len(parts) >= 2:
                     query = f"{hotel_name} {parts[-2].strip()}"
             
+            # Google Hotels API requires check-in/check-out dates
+            tomorrow = (datetime.now() + timedelta(days=1)).strftime("%Y-%m-%d")
+            day_after = (datetime.now() + timedelta(days=2)).strftime("%Y-%m-%d")
+            
             params = {
                 "engine": "google_hotels",
                 "q": query,
@@ -569,6 +577,9 @@ class WebScraperService:
                 "gl": "uk",
                 "hl": "en",
                 "currency": "GBP",
+                "check_in_date": tomorrow,
+                "check_out_date": day_after,
+                "adults": 2,
             }
             
             logger.info(f"Searching Google Hotels for: {query}")
@@ -605,8 +616,42 @@ class WebScraperService:
                 logger.debug(f"Using first Google Hotels result: {best_match.get('name')}")
             
             if best_match:
+                logger.debug(f"Google Hotels match: {best_match.get('name')} - keys: {list(best_match.keys())}")
+                
+                # Extract official website URL - this is very valuable!
+                # SerpAPI returns this in various fields depending on the hotel
+                official_website = None
+                
+                # Check 'link' field (often contains official website)
+                link = best_match.get("link")
+                if link and not any(x in link.lower() for x in ['booking.com', 'expedia', 'hotels.com', 'tripadvisor', 'google.com', 'agoda']):
+                    official_website = link
+                    logger.info(f"Found official website from link: {official_website}")
+                
+                # Check 'website' field
+                if not official_website:
+                    website = best_match.get("website")
+                    if website:
+                        official_website = website
+                        logger.info(f"Found official website from website field: {official_website}")
+                
+                # Check 'hotel_link' field
+                if not official_website:
+                    hotel_link = best_match.get("hotel_link")
+                    if hotel_link and not any(x in hotel_link.lower() for x in ['booking.com', 'expedia', 'hotels.com', 'tripadvisor', 'google.com', 'agoda']):
+                        official_website = hotel_link
+                        logger.info(f"Found official website from hotel_link: {official_website}")
+                
+                result["official_website"] = official_website
+                
+                # Try to get phone number
+                phone = best_match.get("phone")
+                if phone:
+                    result["phone"] = phone
+                
                 # Extract essential_info which may contain room count
                 essential_info = best_match.get("essential_info", [])
+                logger.debug(f"Essential info: {essential_info}")
                 
                 for info in essential_info:
                     info_lower = str(info).lower()
@@ -622,14 +667,8 @@ class WebScraperService:
                             result["success"] = True
                             logger.info(f"Found {room_count} rooms via Google Hotels for {hotel_name}")
                 
-                # Try to get phone number
-                phone = best_match.get("phone")
-                if phone:
-                    result["phone"] = phone
-                
-                # Check overall_rating and other metadata
+                # Check description for room count
                 if not result["success"]:
-                    # Even if no room count, we got data
                     description = best_match.get("description", "")
                     if description:
                         room_match = re.search(r'(\d+)\s*(?:guest\s*)?rooms?', description.lower())
@@ -641,11 +680,108 @@ class WebScraperService:
                                 result["source"] = "Google Hotels"
                                 result["source_notes"] = f"Room count from Google Hotels description: {room_count} rooms"
                                 result["success"] = True
+                
+                # If we have an official website but no room count, scrape it!
+                if not result["success"] and official_website:
+                    logger.info(f"No room count in Google Hotels data, scraping official website: {official_website}")
+                    try:
+                        website_result = await self._scrape_official_website_for_rooms(official_website, hotel_name)
+                        if website_result["success"]:
+                            result["rooms_min"] = website_result["rooms_min"]
+                            result["rooms_max"] = website_result["rooms_max"]
+                            result["source"] = website_result["source"]
+                            result["source_notes"] = website_result["source_notes"]
+                            result["success"] = True
+                            if website_result.get("phone") and not result["phone"]:
+                                result["phone"] = website_result["phone"]
+                    except Exception as e:
+                        logger.warning(f"Failed to scrape official website {official_website}: {e}")
             
             return result
             
         except Exception as e:
             logger.warning(f"Google Hotels search error: {e}")
+            return result
+    
+    async def _scrape_official_website_for_rooms(self, url: str, hotel_name: str) -> Dict[str, Any]:
+        """
+        Scrape the official hotel website for room count information.
+        This is called when Google Hotels provides the URL but not the room count.
+        """
+        result = {
+            "success": False, 
+            "rooms_min": None, 
+            "rooms_max": None, 
+            "source": None, 
+            "source_notes": None, 
+            "phone": None
+        }
+        
+        min_rooms = self._get_min_room_threshold(hotel_name)
+        
+        try:
+            # Fetch the main page
+            html = await self.fetch_page(url)
+            if not html:
+                return result
+            
+            # Check for domain parking
+            text_content = self.extract_text_content(html)
+            parking_check = self.detect_domain_parking(html, text_content)
+            if parking_check["is_parked"]:
+                logger.info(f"Official website appears parked: {url}")
+                return result
+            
+            # Extract room mentions from main page
+            room_mentions = self.extract_room_mentions(html)
+            
+            # Also check key subpages (rooms, about, accommodation)
+            subpages_to_try = []
+            soup = BeautifulSoup(html, 'lxml')
+            for link in soup.find_all('a', href=True):
+                href = link.get('href', '').lower()
+                link_text = link.get_text().lower()
+                if any(kw in href or kw in link_text for kw in ['room', 'accommodation', 'about', 'suite']):
+                    full_url = urljoin(url, link.get('href'))
+                    if full_url not in subpages_to_try and len(subpages_to_try) < 3:
+                        subpages_to_try.append(full_url)
+            
+            # Scrape subpages
+            for subpage_url in subpages_to_try:
+                try:
+                    subpage_html = await self.fetch_page(subpage_url)
+                    if subpage_html:
+                        subpage_mentions = self.extract_room_mentions(subpage_html)
+                        room_mentions.extend(subpage_mentions)
+                except Exception as e:
+                    logger.debug(f"Failed to scrape subpage {subpage_url}: {e}")
+            
+            # Find the most likely room count
+            if room_mentions:
+                # Filter and sort by confidence
+                valid_mentions = [m for m in room_mentions if m["count"] >= min_rooms]
+                if valid_mentions:
+                    # Sort by confidence, then prefer smaller numbers (more likely to be actual room count)
+                    valid_mentions.sort(key=lambda x: (-x["confidence"], x["count"]))
+                    best_mention = valid_mentions[0]
+                    
+                    result["rooms_min"] = best_mention["count"]
+                    result["rooms_max"] = best_mention["count"]
+                    result["source"] = f"Official website ({urlparse(url).netloc})"
+                    result["source_notes"] = f"Room count from official website: {best_mention['count']} rooms. Context: {best_mention['context'][:100]}"
+                    result["success"] = True
+                    logger.info(f"Found {best_mention['count']} rooms from official website {url}")
+            
+            # Extract phone if available
+            if not result["phone"]:
+                phones = self.extract_phone_numbers(html)
+                if phones:
+                    result["phone"] = phones[0]["formatted"]
+            
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Error scraping official website {url}: {e}")
             return result
     
     async def _scrape_city_booking_aggregator(self, hotel_name: str, city: str, min_rooms: int) -> Dict[str, Any]:

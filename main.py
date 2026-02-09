@@ -7,13 +7,13 @@ from hotel websites based on name and address.
 
 import logging
 from contextlib import asynccontextmanager
-from typing import List
+from typing import List, Optional
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from config import LOG_LEVEL
+from config import LOG_LEVEL, REDIS_URL, REDIS_ENABLED
 from models import (
     HotelSearchRequest, 
     HotelInfoResponse, 
@@ -23,6 +23,7 @@ from models import (
     StatusEnum
 )
 from services import HotelLookupService, AIExtractorService
+from services.cache_service import CacheService
 
 # Configure logging
 logging.basicConfig(
@@ -34,15 +35,31 @@ logger = logging.getLogger(__name__)
 # Service instances
 lookup_service: HotelLookupService = None
 ai_service: AIExtractorService = None
+cache_service: CacheService = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    global lookup_service, ai_service
+    global lookup_service, ai_service, cache_service
     
     logger.info("Starting Hotel Information API...")
-    lookup_service = HotelLookupService()
+    
+    # Initialize cache service
+    cache_service = None
+    if REDIS_ENABLED:
+        cache_service = CacheService(REDIS_URL)
+        connected = await cache_service.connect()
+        if connected:
+            logger.info(f"Redis caching enabled at {REDIS_URL}")
+        else:
+            logger.warning("Redis caching disabled (connection failed)")
+            cache_service = None
+    else:
+        logger.info("Redis caching disabled by configuration")
+    
+    # Initialize lookup service with cache
+    lookup_service = HotelLookupService(cache_service=cache_service)
     ai_service = AIExtractorService()
     
     if ai_service.is_configured:
@@ -51,6 +68,10 @@ async def lifespan(app: FastAPI):
         logger.warning("No AI provider configured! Set OPENAI_API_KEY or Azure OpenAI credentials.")
     
     yield
+    
+    # Cleanup
+    if cache_service:
+        await cache_service.disconnect()
     
     logger.info("Shutting down Hotel Information API...")
 
@@ -101,17 +122,45 @@ async def health_check():
     )
 
 
+@app.get("/cache/stats", tags=["Cache"])
+async def cache_stats():
+    """Get Redis cache statistics"""
+    if not cache_service:
+        return {"enabled": False, "message": "Caching is disabled"}
+    
+    stats = await cache_service.get_cache_stats()
+    return {"enabled": True, **stats}
+
+
+@app.delete("/cache/invalidate", tags=["Cache"])
+async def invalidate_cache(
+    hotel_name: str = Query(..., description="Hotel name to invalidate cache for"),
+    address: Optional[str] = Query(None, description="Optional address for more specific cache invalidation")
+):
+    """Invalidate cache for a specific hotel"""
+    if not cache_service or not cache_service.is_connected:
+        raise HTTPException(status_code=503, detail="Caching is not enabled or Redis is not connected")
+    
+    deleted = await cache_service.invalidate_hotel(hotel_name, address)
+    return {"invalidated": True, "keys_deleted": deleted, "hotel_name": hotel_name}
+
+
 @app.post("/api/v1/hotel/lookup", response_model=HotelInfoResponse, tags=["Hotel Lookup"])
-async def lookup_hotel(request: HotelSearchRequest):
+async def lookup_hotel(
+    request: HotelSearchRequest,
+    skip_cache: bool = Query(False, description="Skip cache and force fresh lookup")
+):
     """
     Look up information for a single hotel.
     
     Provide the hotel name and optionally address/city/postcode to improve accuracy.
     
     The API will:
-    1. Search for the hotel's official website
-    2. Scrape the website for information
-    3. Extract room count and contact phone using AI
+    1. Check cache for existing result (unless skip_cache=true)
+    2. Search for the hotel's official website
+    3. Scrape the website for information
+    4. Extract room count and contact phone using AI
+    5. Cache the result for future lookups
     
     Returns structured data including confidence scores and source URLs.
     """
@@ -119,7 +168,7 @@ async def lookup_hotel(request: HotelSearchRequest):
         raise HTTPException(status_code=503, detail="Service not initialized")
     
     try:
-        result = await lookup_service.lookup_hotel(request)
+        result = await lookup_service.lookup_hotel(request, use_cache=not skip_cache)
         return result
     except Exception as e:
         logger.error(f"Lookup failed: {e}")

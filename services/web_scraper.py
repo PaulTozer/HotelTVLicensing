@@ -9,9 +9,19 @@ from bs4 import BeautifulSoup
 from tenacity import retry, stop_after_attempt, wait_exponential
 import phonenumbers
 
-from config import USER_AGENT, SCRAPE_TIMEOUT_SECONDS
+from config import USER_AGENT, SCRAPE_TIMEOUT_SECONDS, SERPAPI_API_KEY
 
 logger = logging.getLogger(__name__)
+
+# Try to import SerpAPI for Google Hotels search
+try:
+    from serpapi import GoogleSearch
+    SERPAPI_AVAILABLE = bool(SERPAPI_API_KEY)
+    if SERPAPI_AVAILABLE:
+        logger.info("SerpAPI configured for Google Hotels search")
+except ImportError:
+    SERPAPI_AVAILABLE = False
+    logger.warning("SerpAPI not installed, Google Hotels search unavailable")
 
 # Domain parking indicators - websites that have been abandoned
 DOMAIN_PARKING_INDICATORS = [
@@ -479,7 +489,17 @@ class WebScraperService:
         
         logger.info(f"Searching booking sites for: {hotel_name} in {effective_city} (min rooms: {min_rooms})")
         
-        # FIRST: Try city-specific booking aggregator URLs (like hotels-birmingham.net)
+        # FIRST: Try Google Hotels API via SerpAPI - most reliable for room counts
+        if SERPAPI_AVAILABLE:
+            try:
+                google_hotels_result = await self._search_google_hotels(hotel_name, effective_city, address)
+                if google_hotels_result["success"]:
+                    logger.info(f"Found hotel info via Google Hotels API: {google_hotels_result.get('rooms_min')} rooms")
+                    return google_hotels_result
+            except Exception as e:
+                logger.warning(f"Google Hotels API search failed: {e}")
+        
+        # SECOND: Try city-specific booking aggregator URLs (like hotels-birmingham.net)
         # These often have reliable room count information
         if effective_city:
             try:
@@ -513,6 +533,120 @@ class WebScraperService:
             logger.warning(f"TripAdvisor scrape failed: {e}")
         
         return result
+    
+    async def _search_google_hotels(self, hotel_name: str, city: Optional[str], address: Optional[str]) -> Dict[str, Any]:
+        """
+        Search Google Hotels via SerpAPI to get hotel information including room count.
+        Google Hotels often has structured data including number of rooms under essential_info.
+        """
+        result = {
+            "success": False, 
+            "rooms_min": None, 
+            "rooms_max": None, 
+            "source": None, 
+            "source_notes": None, 
+            "phone": None
+        }
+        
+        if not SERPAPI_AVAILABLE:
+            return result
+        
+        try:
+            # Build the search query
+            query = hotel_name
+            if city:
+                query = f"{hotel_name} {city}"
+            elif address:
+                # Extract location from address
+                parts = address.split(',')
+                if len(parts) >= 2:
+                    query = f"{hotel_name} {parts[-2].strip()}"
+            
+            params = {
+                "engine": "google_hotels",
+                "q": query,
+                "api_key": SERPAPI_API_KEY,
+                "gl": "uk",
+                "hl": "en",
+                "currency": "GBP",
+            }
+            
+            logger.info(f"Searching Google Hotels for: {query}")
+            search = GoogleSearch(params)
+            results = search.get_dict()
+            
+            # Look for properties in the results
+            properties = results.get("properties", [])
+            
+            if not properties:
+                logger.debug("No properties found in Google Hotels results")
+                return result
+            
+            # Find the best matching property
+            hotel_name_lower = hotel_name.lower()
+            best_match = None
+            
+            for prop in properties:
+                prop_name = prop.get("name", "").lower()
+                # Check for name match
+                if hotel_name_lower in prop_name or prop_name in hotel_name_lower:
+                    best_match = prop
+                    break
+                # Check for partial match
+                name_words = hotel_name_lower.split()
+                if len(name_words) >= 2:
+                    if all(word in prop_name for word in name_words[:2]):
+                        best_match = prop
+                        break
+            
+            if not best_match and properties:
+                # Use first result if no exact match
+                best_match = properties[0]
+                logger.debug(f"Using first Google Hotels result: {best_match.get('name')}")
+            
+            if best_match:
+                # Extract essential_info which may contain room count
+                essential_info = best_match.get("essential_info", [])
+                
+                for info in essential_info:
+                    info_lower = str(info).lower()
+                    # Look for room count patterns
+                    room_match = re.search(r'(\d+)\s*(?:guest\s*)?rooms?', info_lower)
+                    if room_match:
+                        room_count = int(room_match.group(1))
+                        if 5 <= room_count <= 2000:
+                            result["rooms_min"] = room_count
+                            result["rooms_max"] = room_count
+                            result["source"] = "Google Hotels"
+                            result["source_notes"] = f"Room count from Google Hotels: {room_count} rooms"
+                            result["success"] = True
+                            logger.info(f"Found {room_count} rooms via Google Hotels for {hotel_name}")
+                
+                # Try to get phone number
+                phone = best_match.get("phone")
+                if phone:
+                    result["phone"] = phone
+                
+                # Check overall_rating and other metadata
+                if not result["success"]:
+                    # Even if no room count, we got data
+                    description = best_match.get("description", "")
+                    if description:
+                        room_match = re.search(r'(\d+)\s*(?:guest\s*)?rooms?', description.lower())
+                        if room_match:
+                            room_count = int(room_match.group(1))
+                            if 5 <= room_count <= 2000:
+                                result["rooms_min"] = room_count
+                                result["rooms_max"] = room_count
+                                result["source"] = "Google Hotels"
+                                result["source_notes"] = f"Room count from Google Hotels description: {room_count} rooms"
+                                result["success"] = True
+            
+            return result
+            
+        except Exception as e:
+            logger.warning(f"Google Hotels search error: {e}")
+            return result
     
     async def _scrape_city_booking_aggregator(self, hotel_name: str, city: str, min_rooms: int) -> Dict[str, Any]:
         """

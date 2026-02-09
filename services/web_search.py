@@ -9,9 +9,19 @@ from duckduckgo_search import DDGS
 from duckduckgo_search.exceptions import RatelimitException, DuckDuckGoSearchException
 from tenacity import retry, stop_after_attempt, wait_exponential
 
-from config import SEARCH_MAX_RETRIES
+from config import SEARCH_MAX_RETRIES, SERPAPI_API_KEY
 
 logger = logging.getLogger(__name__)
+
+# Try to import SerpAPI
+try:
+    from serpapi import GoogleSearch
+    SERPAPI_AVAILABLE = bool(SERPAPI_API_KEY)
+    if SERPAPI_AVAILABLE:
+        logger.info("SerpAPI configured and available")
+except ImportError:
+    SERPAPI_AVAILABLE = False
+    logger.warning("SerpAPI not installed, will use DuckDuckGo")
 
 
 class WebSearchService:
@@ -88,7 +98,19 @@ class WebSearchService:
         
         results = []
         
-        # Try DuckDuckGo first (unless recently rate limited)
+        # Try SerpAPI first (most reliable)
+        if SERPAPI_AVAILABLE:
+            try:
+                results = self._search_serpapi(query)
+                if results:
+                    ranked_results = self._rank_results(results, name)
+                    logger.info(f"SerpAPI returned {len(ranked_results)} results for '{name}'")
+                    if ranked_results:
+                        return ranked_results
+            except Exception as e:
+                logger.warning(f"SerpAPI error: {e}")
+        
+        # Fallback to DuckDuckGo (unless recently rate limited)
         import time
         if not self._ddg_rate_limited or time.time() > self._ddg_rate_limit_until:
             try:
@@ -130,6 +152,41 @@ class WebSearchService:
         # Fallback 2: Try to construct likely URLs directly
         logger.info(f"Trying direct URL construction for '{name}' with city='{effective_city}'")
         return self._construct_likely_urls(name, effective_city)
+    
+    def _search_serpapi(self, query: str) -> List[Dict[str, Any]]:
+        """
+        Search using SerpAPI (Google Search API).
+        Most reliable search provider with consistent results.
+        """
+        try:
+            params = {
+                "q": query,
+                "api_key": SERPAPI_API_KEY,
+                "engine": "google",
+                "num": 10,
+                "gl": "uk",  # UK results
+                "hl": "en",  # English
+            }
+            
+            search = GoogleSearch(params)
+            results = search.get_dict()
+            
+            organic_results = results.get("organic_results", [])
+            logger.info(f"SerpAPI returned {len(organic_results)} organic results")
+            
+            formatted_results = []
+            for result in organic_results:
+                formatted_results.append({
+                    "href": result.get("link", ""),
+                    "title": result.get("title", ""),
+                    "body": result.get("snippet", "")
+                })
+            
+            return formatted_results
+            
+        except Exception as e:
+            logger.warning(f"SerpAPI search failed: {e}")
+            return []
     
     def _search_bing_fallback(self, query: str) -> List[Dict[str, Any]]:
         """

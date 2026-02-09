@@ -234,9 +234,43 @@ POST /api/v1/hotel/batch
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI key | - |
 | `AZURE_OPENAI_DEPLOYMENT` | Azure deployment name | `gpt-4` |
 | `SERPAPI_API_KEY` | SerpAPI key for Google Hotels/Search | - |
+| `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
+| `REDIS_ENABLED` | Enable/disable Redis caching | `true` |
+| `CACHE_TTL_HOURS` | Cache time-to-live in hours | `24` |
 | `MAX_REQUESTS_PER_MINUTE` | Rate limit | `30` |
 | `SCRAPE_TIMEOUT_SECONDS` | Web scrape timeout | `30` |
 | `LOG_LEVEL` | Logging level | `INFO` |
+
+## Redis Caching
+
+The API uses Redis to cache hotel lookup results, significantly improving performance for repeated queries.
+
+### Cache Behavior
+- **TTL**: Results are cached for 24 hours by default
+- **Cache Key**: Generated from hotel name + address (MD5 hash)
+- **Skip Cache**: Add `?skip_cache=true` to force fresh lookup
+
+### Cache Endpoints
+
+```bash
+# Get cache statistics
+GET /cache/stats
+
+# Invalidate cache for a hotel
+DELETE /cache/invalidate?hotel_name=The%20Ritz%20London
+```
+
+### Running with Docker Compose
+
+Redis is automatically started with docker-compose:
+
+```bash
+docker-compose up --build
+```
+
+### Disabling Cache
+
+Set `REDIS_ENABLED=false` in environment variables to disable caching.
 
 ## Limitations
 
@@ -259,7 +293,7 @@ The API handles errors gracefully and returns appropriate status codes:
 
 ## Improvements for Production
 
-1. **Add Redis caching** to avoid re-scraping recent lookups
+1. ~~**Add Redis caching** to avoid re-scraping recent lookups~~ ✅ Implemented
 2. **Add Playwright/Selenium** for JavaScript-rendered sites
 3. **Add retry queues** for failed lookups
 4. **Add webhook support** for async batch processing
@@ -274,6 +308,7 @@ HotelTVLicensing/
 ├── models.py               # Pydantic request/response models
 ├── services/
 │   ├── __init__.py
+│   ├── cache_service.py    # Redis caching service
 │   ├── web_search.py       # Step 1-2: Google Hotels API, Google Search & URL validation
 │   ├── web_scraper.py      # Step 3-4: Scraping & pre-extraction (+ Google Hotels room data)
 │   ├── ai_extractor.py     # Step 5-6: AI verification & extraction (Azure OpenAI)

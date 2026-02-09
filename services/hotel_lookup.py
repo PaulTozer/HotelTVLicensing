@@ -9,6 +9,7 @@ from .web_search import WebSearchService
 from .web_scraper import WebScraperService
 from .ai_extractor import AIExtractorService
 from .planning_portal import PlanningPortalService
+from .cache_service import CacheService
 
 logger = logging.getLogger(__name__)
 
@@ -16,25 +17,54 @@ logger = logging.getLogger(__name__)
 class HotelLookupService:
     """Orchestrates the full hotel information lookup process"""
     
-    def __init__(self):
+    def __init__(self, cache_service: Optional[CacheService] = None):
         self.search_service = WebSearchService()
         self.scraper_service = WebScraperService()
         self.ai_service = AIExtractorService()
         self.planning_service = PlanningPortalService()
+        self.cache_service = cache_service
     
-    async def lookup_hotel(self, request: HotelSearchRequest) -> HotelInfoResponse:
+    async def lookup_hotel(self, request: HotelSearchRequest, use_cache: bool = True) -> HotelInfoResponse:
         """
         Perform a complete hotel information lookup
         
         Process:
-        1. Search for hotel's official website
-        2. Scrape the website (including relevant subpages)
-        3. Use AI to extract structured information
-        4. Return consolidated results
+        1. Check cache for existing result
+        2. Search for hotel's official website
+        3. Scrape the website (including relevant subpages)
+        4. Use AI to extract structured information
+        5. Cache and return consolidated results
         """
+        address_str = self._build_address(request)
+        
+        # Step 0: Check cache first
+        if use_cache and self.cache_service and self.cache_service.is_connected:
+            cached_result = await self.cache_service.get_hotel_lookup(request.name, address_str)
+            if cached_result:
+                logger.info(f"Returning cached result for: {request.name}")
+                # Convert back to HotelInfoResponse
+                response = HotelInfoResponse(
+                    search_name=cached_result.get("search_name", request.name),
+                    search_address=cached_result.get("search_address"),
+                    official_website=cached_result.get("official_website"),
+                    uk_contact_phone=cached_result.get("uk_contact_phone"),
+                    rooms_min=cached_result.get("rooms_min"),
+                    rooms_max=cached_result.get("rooms_max"),
+                    rooms_source_notes=cached_result.get("rooms_source_notes"),
+                    website_source_url=cached_result.get("website_source_url"),
+                    phone_source_url=cached_result.get("phone_source_url"),
+                    status=StatusEnum(cached_result.get("status", "partial")),
+                    last_checked=datetime.fromisoformat(cached_result["last_checked"]) if cached_result.get("last_checked") else datetime.utcnow(),
+                    confidence_score=cached_result.get("confidence_score"),
+                    errors=cached_result.get("errors", [])
+                )
+                # Mark as cached
+                response.errors.insert(0, f"[Cached result from {cached_result.get('_cached_at', 'unknown')}]")
+                return response
+        
         response = HotelInfoResponse(
             search_name=request.name,
-            search_address=self._build_address(request),
+            search_address=address_str,
             last_checked=datetime.utcnow()
         )
         
@@ -185,6 +215,11 @@ class HotelLookupService:
                             response.errors.append(f"Room count sourced from planning portal")
             
             logger.info(f"Lookup complete for {request.name}: status={response.status}")
+            
+            # Cache the result if caching is enabled
+            if use_cache and self.cache_service and self.cache_service.is_connected:
+                await self._cache_response(request.name, address_str, response)
+            
             return response
             
         except Exception as e:
@@ -192,6 +227,29 @@ class HotelLookupService:
             response.status = StatusEnum.ERROR
             response.errors.append(str(e))
             return response
+    
+    async def _cache_response(self, hotel_name: str, address: Optional[str], response: HotelInfoResponse) -> None:
+        """Cache a hotel lookup response"""
+        try:
+            # Convert response to dict for caching
+            cache_data = {
+                "search_name": response.search_name,
+                "search_address": response.search_address,
+                "official_website": response.official_website,
+                "uk_contact_phone": response.uk_contact_phone,
+                "rooms_min": response.rooms_min,
+                "rooms_max": response.rooms_max,
+                "rooms_source_notes": response.rooms_source_notes,
+                "website_source_url": response.website_source_url,
+                "phone_source_url": response.phone_source_url,
+                "status": response.status.value if response.status else "partial",
+                "last_checked": response.last_checked.isoformat() if response.last_checked else None,
+                "confidence_score": response.confidence_score,
+                "errors": response.errors
+            }
+            await self.cache_service.set_hotel_lookup(hotel_name, address, cache_data)
+        except Exception as e:
+            logger.warning(f"Failed to cache result for {hotel_name}: {e}")
     
     async def lookup_batch(self, requests: List[HotelSearchRequest], delay_seconds: float = 1.5, max_concurrent: int = 5) -> List[HotelInfoResponse]:
         """

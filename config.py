@@ -17,6 +17,11 @@ AZURE_OPENAI_FALLBACK_DEPLOYMENT = os.getenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT",
 # SerpAPI Configuration (for reliable Google search)
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 
+# Redis Configuration
+REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")
+REDIS_ENABLED = os.getenv("REDIS_ENABLED", "true").lower() == "true"
+CACHE_TTL_HOURS = int(os.getenv("CACHE_TTL_HOURS", "24"))
+
 # Determine which AI provider to use
 USE_AZURE_OPENAI = bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)
 

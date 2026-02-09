@@ -234,6 +234,11 @@ Website Content:
         if not self.is_configured:
             return {"is_match": True, "confidence": 0.5, "reason": "AI unavailable for verification"}
         
+        # Skip verification if content is too short
+        if not website_content or len(website_content.strip()) < 100:
+            logger.warning("Website content too short for verification")
+            return {"is_match": True, "confidence": 0.3, "reason": "Content too short to verify"}
+        
         prompt = f"""Determine if this website content is for the correct hotel.
 
 Hotel we're looking for:
@@ -256,15 +261,28 @@ Respond in JSON:
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": "You verify if website content matches a specific hotel."},
+                    {"role": "system", "content": "You verify if website content matches a specific hotel. Always respond with valid JSON."},
                     {"role": "user", "content": prompt}
                 ],
                 max_completion_tokens=200,
                 response_format={"type": "json_object"}
             )
             
-            return json.loads(response.choices[0].message.content)
+            # Check if response has content
+            if not response.choices or not response.choices[0].message.content:
+                logger.warning("AI returned empty response for verification")
+                return {"is_match": True, "confidence": 0.5, "reason": "AI returned empty response"}
             
+            content = response.choices[0].message.content.strip()
+            if not content:
+                logger.warning("AI returned whitespace-only response for verification")
+                return {"is_match": True, "confidence": 0.5, "reason": "AI returned empty response"}
+            
+            return json.loads(content)
+            
+        except json.JSONDecodeError as e:
+            logger.error(f"Website verification JSON parse error: {e}")
+            return {"is_match": True, "confidence": 0.5, "reason": f"Failed to parse AI response"}
         except Exception as e:
             logger.error(f"Website verification error: {e}")
             return {"is_match": True, "confidence": 0.5, "reason": f"Verification failed: {e}"}

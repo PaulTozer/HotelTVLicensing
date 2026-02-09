@@ -277,8 +277,28 @@ Set `REDIS_ENABLED=false` in environment variables to disable caching.
 1. **Website Accuracy**: May not always find the correct official website for smaller hotels
 2. **Room Data Availability**: Not all hotel websites list room counts
 3. **Rate Limiting**: External APIs (search, scraping) have rate limits
-4. **Dynamic Content**: Cannot scrape JavaScript-rendered content (SPA websites)
-5. **Processing Time**: Each lookup takes 10-30 seconds due to multiple web requests and AI calls
+4. **Processing Time**: Each lookup takes 10-30 seconds due to multiple web requests and AI calls
+
+## Playwright (JavaScript Rendering)
+
+The API uses Playwright to handle JavaScript-heavy websites (SPAs, React, Vue, Angular sites) that don't render content with standard HTTP requests.
+
+### How It Works
+1. First tries standard HTTP request (fast)
+2. Detects if content is minimal or has SPA markers
+3. Automatically falls back to Playwright (headless Chromium)
+4. Returns whichever method produces more content
+
+### Features
+- **Automatic detection** of JS-heavy sites
+- **Cookie consent handling** - dismisses common consent popups
+- **Resource blocking** - blocks images/ads for faster loading
+- **Smart fallback** - only uses browser when needed
+
+### Docker Image Size
+The Docker image includes Chromium browser (~400MB added). To disable Playwright:
+- Remove `playwright>=1.40.0` from requirements.txt
+- Remove Playwright-related lines from Dockerfile
 
 ## Error Handling
 
@@ -294,7 +314,7 @@ The API handles errors gracefully and returns appropriate status codes:
 ## Improvements for Production
 
 1. ~~**Add Redis caching** to avoid re-scraping recent lookups~~ ✅ Implemented
-2. **Add Playwright/Selenium** for JavaScript-rendered sites
+2. ~~**Add Playwright/Selenium** for JavaScript-rendered sites~~ ✅ Implemented
 3. **Add retry queues** for failed lookups
 4. **Add webhook support** for async batch processing
 5. **Add authentication** (API keys, OAuth)
@@ -309,6 +329,7 @@ HotelTVLicensing/
 ├── services/
 │   ├── __init__.py
 │   ├── cache_service.py    # Redis caching service
+│   ├── playwright_service.py # Playwright for JS-rendered sites
 │   ├── web_search.py       # Step 1-2: Google Hotels API, Google Search & URL validation
 │   ├── web_scraper.py      # Step 3-4: Scraping & pre-extraction (+ Google Hotels room data)
 │   ├── ai_extractor.py     # Step 5-6: AI verification & extraction (Azure OpenAI)

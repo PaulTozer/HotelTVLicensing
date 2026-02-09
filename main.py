@@ -58,6 +58,13 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Redis caching disabled by configuration")
     
+    # Initialize Playwright service (lazy initialization on first use)
+    from services.playwright_service import PLAYWRIGHT_AVAILABLE, get_playwright_service
+    if PLAYWRIGHT_AVAILABLE:
+        logger.info("Playwright available for JavaScript-rendered sites")
+    else:
+        logger.info("Playwright not available - JavaScript rendering disabled")
+    
     # Initialize lookup service with cache
     lookup_service = HotelLookupService(cache_service=cache_service)
     ai_service = AIExtractorService()
@@ -72,6 +79,14 @@ async def lifespan(app: FastAPI):
     # Cleanup
     if cache_service:
         await cache_service.disconnect()
+    
+    # Cleanup Playwright
+    if PLAYWRIGHT_AVAILABLE:
+        try:
+            playwright_service = get_playwright_service()
+            await playwright_service.close()
+        except Exception as e:
+            logger.warning(f"Error closing Playwright: {e}")
     
     logger.info("Shutting down Hotel Information API...")
 

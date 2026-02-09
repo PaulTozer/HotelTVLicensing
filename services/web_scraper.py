@@ -10,6 +10,7 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 import phonenumbers
 
 from config import USER_AGENT, SCRAPE_TIMEOUT_SECONDS, SERPAPI_API_KEY
+from .playwright_service import get_playwright_service, PLAYWRIGHT_AVAILABLE
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +106,21 @@ class WebScraperService:
             return 5  # Small pubs, coaching inns, guest houses
     
     @retry(stop=stop_after_attempt(2), wait=wait_exponential(multiplier=1, min=1, max=5))
-    async def fetch_page(self, url: str) -> Optional[str]:
-        """Fetch a webpage and return its HTML content"""
+    async def fetch_page(self, url: str, use_playwright: bool = False) -> Optional[str]:
+        """
+        Fetch a webpage and return its HTML content.
+        
+        Args:
+            url: The URL to fetch
+            use_playwright: If True, use Playwright for JS rendering
+            
+        Returns:
+            HTML content as string, or None if failed
+        """
+        # Use Playwright if requested and available
+        if use_playwright and PLAYWRIGHT_AVAILABLE:
+            return await self._fetch_with_playwright(url)
+        
         try:
             async with httpx.AsyncClient(timeout=self.timeout, follow_redirects=True) as client:
                 response = await client.get(url, headers=self.headers)
@@ -122,6 +136,79 @@ class WebScraperService:
         except Exception as e:
             logger.error(f"Error fetching {url}: {e}")
             return None
+    
+    async def _fetch_with_playwright(self, url: str) -> Optional[str]:
+        """Fetch a page using Playwright for JavaScript rendering"""
+        try:
+            playwright = get_playwright_service()
+            result = await playwright.fetch_rendered_page(url)
+            
+            if result["success"]:
+                return result["html"]
+            else:
+                logger.warning(f"Playwright failed for {url}: {result.get('error')}")
+                return None
+        except Exception as e:
+            logger.error(f"Playwright error for {url}: {e}")
+            return None
+    
+    async def fetch_page_with_fallback(self, url: str) -> Dict[str, Any]:
+        """
+        Fetch a page, falling back to Playwright if content is minimal.
+        
+        Returns:
+            Dict with 'html', 'text', 'used_playwright', 'success'
+        """
+        # First try regular HTTP
+        html = await self.fetch_page(url, use_playwright=False)
+        
+        if not html:
+            # HTTP failed, try Playwright if available
+            if PLAYWRIGHT_AVAILABLE:
+                logger.info(f"HTTP fetch failed, trying Playwright for {url}")
+                html = await self.fetch_page(url, use_playwright=True)
+                if html:
+                    text = self.extract_text_content(html)
+                    return {
+                        "html": html,
+                        "text": text,
+                        "used_playwright": True,
+                        "success": True
+                    }
+            return {
+                "html": None,
+                "text": None,
+                "used_playwright": False,
+                "success": False
+            }
+        
+        # Check if content is minimal (might be JS-heavy site)
+        text = self.extract_text_content(html)
+        
+        if PLAYWRIGHT_AVAILABLE:
+            playwright = get_playwright_service()
+            if await playwright.is_js_heavy_site(html, text):
+                logger.info(f"Detected JS-heavy site, using Playwright for {url}")
+                playwright_result = await playwright.fetch_rendered_page(url)
+                
+                if playwright_result["success"]:
+                    playwright_text = playwright_result.get("text", "")
+                    # Only use Playwright result if it has more content
+                    if len(playwright_text) > len(text) * 1.5:
+                        logger.info(f"Playwright returned more content ({len(playwright_text)} vs {len(text)} chars)")
+                        return {
+                            "html": playwright_result["html"],
+                            "text": playwright_text,
+                            "used_playwright": True,
+                            "success": True
+                        }
+        
+        return {
+            "html": html,
+            "text": text,
+            "used_playwright": False,
+            "success": True
+        }
     
     def extract_text_content(self, html: str, max_length: int = 15000) -> str:
         """Extract readable text content from HTML"""
@@ -351,9 +438,15 @@ class WebScraperService:
         
         return all_urls[:8]  # Return top 8 relevant pages (increased from 5)
     
-    async def scrape_hotel_website(self, url: str) -> Dict[str, Any]:
+    async def scrape_hotel_website(self, url: str, try_playwright_fallback: bool = True) -> Dict[str, Any]:
         """
-        Scrape a hotel website for all relevant information
+        Scrape a hotel website for all relevant information.
+        
+        Uses Playwright as fallback for JavaScript-heavy sites.
+        
+        Args:
+            url: The URL to scrape
+            try_playwright_fallback: If True, try Playwright for JS-heavy sites
         
         Returns dict with:
         - text_content: Extracted text
@@ -361,6 +454,7 @@ class WebScraperService:
         - room_mentions: List of room count mentions
         - relevant_pages: List of URLs to relevant subpages
         - raw_html: Raw HTML content for domain parking detection
+        - used_playwright: Whether Playwright was used
         """
         result = {
             "url": url,
@@ -369,12 +463,27 @@ class WebScraperService:
             "room_mentions": [],
             "relevant_pages": [],
             "raw_html": "",
+            "used_playwright": False,
             "success": False
         }
         
-        html = await self.fetch_page(url)
-        if not html:
-            return result
+        if try_playwright_fallback and PLAYWRIGHT_AVAILABLE:
+            # Use the smart fallback method
+            fetch_result = await self.fetch_page_with_fallback(url)
+            
+            if not fetch_result["success"]:
+                return result
+            
+            html = fetch_result["html"]
+            result["used_playwright"] = fetch_result["used_playwright"]
+            
+            if result["used_playwright"]:
+                logger.info(f"Used Playwright for JavaScript rendering: {url}")
+        else:
+            # Standard HTTP fetch
+            html = await self.fetch_page(url)
+            if not html:
+                return result
         
         result["raw_html"] = html
         result["text_content"] = self.extract_text_content(html)

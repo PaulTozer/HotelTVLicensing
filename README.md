@@ -4,12 +4,13 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
 
 ## Features
 
-- 🔍 **Automatic Website Discovery**: Finds hotel official websites via web search
+- 🔍 **Automatic Website Discovery**: Finds hotel official websites via Google Hotels API (SerpAPI) and web search
+- 🏨 **Google Hotels Integration**: Uses SerpAPI's Google Hotels API to find official hotel websites directly
 - 🕷️ **Smart Web Scraping**: Scrapes multiple pages (homepage, about, rooms, contact)
-- 🤖 **AI-Powered Extraction**: Uses GPT to extract structured data from unstructured content
+- 🤖 **AI-Powered Extraction**: Uses Azure OpenAI GPT to extract structured data from unstructured content
 - 📞 **UK Phone Validation**: Validates and formats UK phone numbers
 - 📊 **Confidence Scoring**: Provides confidence scores for extracted data
-- 🐳 **Containerized**: Ready for deployment with Docker
+- 🐳 **Containerized**: Deployed on Azure Container Apps
 
 ## How It Works - Workflow
 
@@ -31,8 +32,10 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
                          ┌─────────────────────┐
                          │   STEP 1: SEARCH    │
                          │   ───────────────   │
-                         │ • DuckDuckGo search │
-                         │ • URL pattern match │
+                         │ • Google Hotels API │
+                         │   (via SerpAPI)     │
+                         │ • Fallback: Google  │
+                         │   Search (SerpAPI)  │
                          │ • Filter aggregators│
                          └──────────┬──────────┘
                                     │
@@ -96,7 +99,7 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
 
 | Step | Component | Description |
 |------|-----------|-------------|
-| **1. Search** | `WebSearchService` | Searches DuckDuckGo for "[Hotel Name] hotel UK official website". Ranks results, filtering out aggregators (Booking.com, TripAdvisor, etc.). Falls back to URL pattern construction (e.g., `thegrandhotel.co.uk`). |
+| **1. Search** | `WebSearchService` | First searches Google Hotels API via SerpAPI - when an exact hotel match is found, the official website link is extracted directly. Falls back to Google Search via SerpAPI for "[Hotel Name] hotel UK official website". Ranks results, filtering out aggregators (Booking.com, TripAdvisor, etc.). |
 | **2. Validate** | `WebSearchService` | Tests candidate URLs with HTTP HEAD requests to verify they're accessible and respond correctly. |
 | **3. Scrape** | `WebScraperService` | Fetches the homepage HTML, then identifies and scrapes relevant subpages (rooms, accommodation, contact, about). Extracts clean text from up to 4 pages. |
 | **4. Extract** | `WebScraperService` | Pre-processes content using regex patterns to identify phone numbers (validated as UK format) and room count mentions (e.g., "150 rooms", "200 bedrooms"). |
@@ -105,12 +108,18 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
 
 ## Quick Start
 
-### 1. Set up your API key
+### 1. Set up environment variables
 
-Create a `.env` file with your OpenAI API key:
+Create a `.env` file with your API keys:
 
 ```bash
-OPENAI_API_KEY=sk-your-key-here
+# Azure OpenAI (required)
+AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
+AZURE_OPENAI_API_KEY=your-azure-openai-key
+AZURE_OPENAI_DEPLOYMENT=gpt-4
+
+# SerpAPI for Google Hotels/Search (required)
+SERPAPI_API_KEY=your-serpapi-key
 ```
 
 ### 2. Run with Docker
@@ -130,6 +139,12 @@ uvicorn main:app --reload
 
 - **Swagger UI**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/health
+
+### Deployed Instance
+
+The API is deployed on Azure Container Apps:
+- **Base URL**: `https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io`
+- **Swagger UI**: `https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io/docs`
 
 ## API Endpoints
 
@@ -159,7 +174,7 @@ POST /api/v1/hotel/lookup
     "rooms_min": 201,
     "rooms_max": 201,
     "rooms_source_notes": "Found on About page: '201 luxurious bedrooms'",
-    "website_source_url": "DuckDuckGo search",
+    "website_source_url": "Google Hotels",
     "phone_source_url": "https://www.grandbrighton.co.uk/contact",
     "status": "success",
     "last_checked": "2024-02-06T10:30:00Z",
@@ -209,18 +224,22 @@ POST /api/v1/hotel/batch
 
 ## Cost Estimation
 
-Using OpenAI GPT-4o-mini:
-- ~$0.001 - $0.003 per hotel lookup
-- For 10,000 hotels: ~$10-30
+**Azure OpenAI (GPT-4):**
+- ~$0.001 - $0.005 per hotel lookup
+- For 10,000 hotels: ~$10-50
+
+**SerpAPI:**
+- 100 free searches/month
+- Paid plans from $50/month for 5,000 searches
 
 ## Environment Variables
 
 | Variable | Description | Default |
 |----------|-------------|---------|
-| `OPENAI_API_KEY` | OpenAI API key (required) | - |
-| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint (optional) | - |
-| `AZURE_OPENAI_API_KEY` | Azure OpenAI key (optional) | - |
+| `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint | - |
+| `AZURE_OPENAI_API_KEY` | Azure OpenAI key | - |
 | `AZURE_OPENAI_DEPLOYMENT` | Azure deployment name | `gpt-4` |
+| `SERPAPI_API_KEY` | SerpAPI key for Google Hotels/Search | - |
 | `MAX_REQUESTS_PER_MINUTE` | Rate limit | `30` |
 | `SCRAPE_TIMEOUT_SECONDS` | Web scrape timeout | `30` |
 | `LOG_LEVEL` | Logging level | `INFO` |
@@ -261,9 +280,9 @@ HotelTVLicensing/
 ├── models.py               # Pydantic request/response models
 ├── services/
 │   ├── __init__.py
-│   ├── web_search.py       # Step 1-2: Search & URL validation
-│   ├── web_scraper.py      # Step 3-4: Scraping & pre-extraction
-│   ├── ai_extractor.py     # Step 5-6: AI verification & extraction
+│   ├── web_search.py       # Step 1-2: Google Hotels API, Google Search & URL validation
+│   ├── web_scraper.py      # Step 3-4: Scraping & pre-extraction (+ Google Hotels room data)
+│   ├── ai_extractor.py     # Step 5-6: AI verification & extraction (Azure OpenAI)
 │   └── hotel_lookup.py     # Orchestrates the full workflow
 ├── Dockerfile              # Container definition
 ├── docker-compose.yml      # Container orchestration
@@ -284,24 +303,26 @@ HotelTVLicensing/
 
 **Workflow Log:**
 ```
-1. SEARCH    → DuckDuckGo: "The Grand Hotel Brighton" hotel UK Brighton official website
-2. VALIDATE  → Found working URL: https://www.leonardohotels.co.uk/brighton/the-grand-brighton
-3. SCRAPE    → Fetched 3 pages: homepage, rooms, destinations
+1. SEARCH    → Google Hotels API: "The Grand Hotel Brighton" (exact match found)
+             → Official website extracted: https://www.grandbrighton.co.uk
+2. VALIDATE  → Found working URL: https://www.grandbrighton.co.uk
+3. SCRAPE    → Fetched 3 pages: homepage, rooms, contact
 4. EXTRACT   → Pre-extracted: 2 phone candidates, 3 room mentions
 5. AI VERIFY → GPT confirmed: Website matches "The Grand Hotel Brighton"
-6. AI EXTRACT→ GPT analyzed content, confidence: 0.64
+6. AI EXTRACT→ GPT analyzed content, confidence: 0.85
 ```
 
 **Output:**
 ```json
 {
-  "official_website": "https://www.leonardohotels.co.uk/brighton/the-grand-brighton",
-  "uk_contact_phone": "01273 224300",
+  "official_website": "https://www.grandbrighton.co.uk",
+  "uk_contact_phone": "+44 1273 224300",
   "rooms_min": 201,
-  "rooms_max": 205,
-  "rooms_source_notes": "Two room counts found: 'With 205 beautifully appointed guest rooms' and 'Number of rooms: 201'",
+  "rooms_max": 201,
+  "rooms_source_notes": "Found on About page: '201 luxurious bedrooms'",
+  "website_source_url": "Google Hotels",
   "status": "success",
-  "confidence_score": 0.64
+  "confidence_score": 0.85
 }
 ```
 

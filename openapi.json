@@ -1,8 +1,8 @@
 {
-  "openapi": "3.1.0",
+  "openapi": "3.0.3",
   "info": {
     "title": "Hotel TV Licensing API",
-    "description": "API to look up hotel information including room counts, official websites, and contact phone numbers using AI-powered web scraping.",
+    "description": "API to look up hotel information including room counts, official websites, and contact phone numbers.",
     "version": "1.0.0"
   },
   "servers": [
@@ -16,7 +16,7 @@
       "post": {
         "operationId": "lookupHotelInformation",
         "summary": "Look up hotel information",
-        "description": "Searches for a hotel's official website, UK contact phone number, and room count using AI-powered web scraping. Provide the hotel name and optionally the address for better accuracy.",
+        "description": "Searches for a hotel's official website, UK contact phone number, and room count. Provide the hotel name and optionally the address for better accuracy. Note: This may take 10-30 seconds to complete.",
         "requestBody": {
           "required": true,
           "content": {
@@ -27,27 +27,11 @@
                 "properties": {
                   "name": {
                     "type": "string",
-                    "description": "The name of the hotel to look up (e.g., 'The Savoy', 'The Grand Hotel')"
+                    "description": "The name of the hotel to look up"
                   },
                   "address": {
                     "type": "string",
-                    "description": "The address of the hotel to help with disambiguation (e.g., 'Strand, London' or 'Kings Road, Brighton')"
-                  }
-                }
-              },
-              "examples": {
-                "theSavoy": {
-                  "summary": "The Savoy London",
-                  "value": {
-                    "name": "The Savoy",
-                    "address": "Strand, London"
-                  }
-                },
-                "grandBrighton": {
-                  "summary": "Grand Hotel Brighton",
-                  "value": {
-                    "name": "The Grand Hotel",
-                    "address": "Kings Road, Brighton"
+                    "description": "The address of the hotel to help with disambiguation"
                   }
                 }
               }
@@ -72,37 +56,30 @@
                     },
                     "official_website": {
                       "type": "string",
-                      "nullable": true,
                       "description": "The hotel's official website URL"
                     },
                     "uk_contact_phone": {
                       "type": "string",
-                      "nullable": true,
                       "description": "The hotel's UK contact phone number"
                     },
                     "rooms_min": {
                       "type": "integer",
-                      "nullable": true,
-                      "description": "Minimum number of rooms (or exact count if rooms_max is the same)"
+                      "description": "Minimum number of rooms"
                     },
                     "rooms_max": {
                       "type": "integer",
-                      "nullable": true,
-                      "description": "Maximum number of rooms (or exact count if rooms_min is the same)"
+                      "description": "Maximum number of rooms"
                     },
                     "rooms_source_notes": {
                       "type": "string",
-                      "nullable": true,
                       "description": "Notes about where the room count was found"
                     },
                     "website_source_url": {
                       "type": "string",
-                      "nullable": true,
                       "description": "The URL where the website information was found"
                     },
                     "phone_source_url": {
                       "type": "string",
-                      "nullable": true,
                       "description": "The URL where the phone number was found"
                     },
                     "status": {
@@ -117,7 +94,6 @@
                     },
                     "confidence_score": {
                       "type": "number",
-                      "nullable": true,
                       "description": "Confidence score from 0.0 to 1.0"
                     },
                     "errors": {
@@ -126,77 +102,6 @@
                         "type": "string"
                       },
                       "description": "Any errors encountered during the lookup"
-                    }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-    },
-    "/api/v1/hotel/batch": {
-      "post": {
-        "operationId": "batchLookupHotels",
-        "summary": "Look up multiple hotels in batch",
-        "description": "Performs lookups for multiple hotels at once. Returns results for each hotel in the batch.",
-        "requestBody": {
-          "required": true,
-          "content": {
-            "application/json": {
-              "schema": {
-                "type": "object",
-                "required": ["hotels"],
-                "properties": {
-                  "hotels": {
-                    "type": "array",
-                    "description": "Array of hotels to look up",
-                    "items": {
-                      "type": "object",
-                      "required": ["name"],
-                      "properties": {
-                        "name": {
-                          "type": "string",
-                          "description": "The name of the hotel"
-                        },
-                        "address": {
-                          "type": "string",
-                          "description": "The address of the hotel"
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-            }
-          }
-        },
-        "responses": {
-          "200": {
-            "description": "Successfully processed batch lookup",
-            "content": {
-              "application/json": {
-                "schema": {
-                  "type": "object",
-                  "properties": {
-                    "results": {
-                      "type": "array",
-                      "items": {
-                        "type": "object",
-                        "description": "Hotel lookup result (same schema as single lookup)"
-                      }
-                    },
-                    "total": {
-                      "type": "integer",
-                      "description": "Total number of hotels processed"
-                    },
-                    "successful": {
-                      "type": "integer",
-                      "description": "Number of successful lookups"
-                    },
-                    "failed": {
-                      "type": "integer",
-                      "description": "Number of failed lookups"
                     }
                   }
                 }

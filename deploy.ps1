@@ -66,7 +66,7 @@ $deploymentOutput = az deployment group create `
     --template-file "infra/main.bicep" `
     --parameters location=$Location `
     --parameters baseName=$BaseName `
-    --parameters azureOpenAiEndpoint="https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/" `
+    --parameters azureOpenAiEndpoint="https://yourdeployment.services.ai.azure.com/" `
     --parameters azureOpenAiApiKey=$AzureOpenAiApiKey `
     --parameters azureOpenAiDeployment="gpt-5.2-chat" `
     --query "properties.outputs" `

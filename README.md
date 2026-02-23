@@ -109,34 +109,9 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
 
 ## Prerequisites
 
-Before deploying, you need to set up the following Azure resources:
-
-### 1. Azure OpenAI Service
-
-- Create an Azure OpenAI resource (Sweden Central recommended)
-- Deploy a model (e.g., `gpt-5.2-chat` or `gpt-4`) for AI extraction
-- Note down the **endpoint** and **API key**
-
-### 2. Azure AI Foundry Project
-
-The API uses an Azure AI Foundry agent with Bing Grounding to search for hotel information.
-
-1. Go to [Azure AI Foundry](https://ai.azure.com)
-2. Create or select a project
-3. Note the **project endpoint** (e.g., `https://your-foundry.services.ai.azure.com/api/projects/yourproject`)
-
-### 3. Bing Grounding Connection
-
-1. In your Azure AI Foundry project, go to **Connected resources**
-2. Add a **Bing Search** connection (requires a Bing Search resource in Azure)
-3. Note the **connection name** (e.g., `my-bing-grounding`)
-
-### 4. Model Deployment for Bing Agent
-
-- Deploy `gpt-4.1-mini` in your AI Foundry project
-- **Important**: Only `gpt-4.1-mini` works reliably with Bing Grounding tools. Other models (e.g., `gpt-5.2-chat`, `gpt-4.1`) may return errors.
-
-See [FOUNDRY_SETUP.md](FOUNDRY_SETUP.md) for detailed step-by-step instructions on setting up the Azure AI Foundry agent.
+- [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) (v2.50+)
+- An active Azure subscription
+- **That's it!** — the deployment script creates all Azure resources automatically
 
 ## Quick Start (Local Development)
 
@@ -177,48 +152,47 @@ uvicorn main:app --reload
 
 ## Deploying to Azure
 
-### Step 1: Install Prerequisites
+The deployment is fully automated — a single script creates all Azure resources and deploys the application.
 
-- [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) (v2.50+)
-- An active Azure subscription
-- Azure OpenAI resource with a deployed model
-- Azure AI Foundry project with Bing Grounding connection (see Prerequisites above)
-
-### Step 2: Log in to Azure
+### Step 1: Log in to Azure
 
 ```powershell
 az login
 ```
 
-### Step 3: Run the deployment script
+### Step 2: Run the deployment script
+
+```powershell
+# Deploy everything with defaults (Sweden Central)
+.\deploy.ps1 -ResourceGroupName "rg-hotel-api-swedencentral"
+```
+
+Or customize:
 
 ```powershell
 .\deploy.ps1 `
-    -ResourceGroupName "rg-hotel-api-swedencentral" `
-    -AzureOpenAiApiKey "your-azure-openai-api-key" `
-    -AzureOpenAiEndpoint "https://your-resource.openai.azure.com/" `
-    -AzureAiProjectEndpoint "https://your-foundry.services.ai.azure.com/api/projects/yourproject" `
-    -BingConnectionName "my-bing-grounding" `
-    -AzureAiModelDeployment "gpt-4.1-mini"
+    -ResourceGroupName "rg-hotel-api" `
+    -Location "swedencentral" `
+    -BaseName "hotelapi" `
+    -OpenAiChatModel "gpt-4" `
+    -FoundryModel "gpt-4.1-mini" `
+    -BingSearchSku "S1"
 ```
 
 #### deploy.ps1 Parameters
 
-| Parameter | Required | Default | Description |
-|-----------|----------|---------|-------------|
-| `ResourceGroupName` | No | `rg-hotel-api-swedencentral` | Azure resource group name |
-| `AzureOpenAiApiKey` | **Yes** | - | Azure OpenAI API key |
-| `AzureAiProjectEndpoint` | **Yes** | - | Azure AI Foundry project endpoint |
-| `BingConnectionName` | **Yes** | - | Bing Grounding connection name in AI Foundry |
-| `AzureAiModelDeployment` | No | `gpt-4.1-mini` | Model for Bing Grounding agent |
-| `AzureOpenAiEndpoint` | **Yes** | - | Azure OpenAI endpoint (e.g., `https://your-resource.openai.azure.com/`) |
-| `AzureOpenAiDeployment` | No | `gpt-4` | Azure OpenAI deployment for AI extraction |
-| `DeployBingSearch` | No | `false` | Switch to create a Bing Search v7 resource |
-| `BingSearchSku` | No | `S1` | Bing Search pricing tier (`S1` or `F1` free) |
-| `Location` | No | `swedencentral` | Azure region |
-| `BaseName` | No | `hotelapi` | Base name for Azure resources |
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `ResourceGroupName` | `rg-hotel-api-swedencentral` | Azure resource group name |
+| `Location` | `swedencentral` | Azure region |
+| `BaseName` | `hotelapi` | Base name prefix for all resources |
+| `OpenAiChatModel` | `gpt-4` | Model for AI extraction |
+| `FoundryModel` | `gpt-4.1-mini` | Model for Bing Grounding agent (must support tools) |
+| `BingSearchSku` | `S1` | Bing Search pricing tier (`S1` or `F1` free) |
+| `BingConnectionName` | `bing-grounding` | Connection name in AI Foundry |
+| `SkipInfrastructure` | - | Switch — skip infra, only rebuild & push the Docker image |
 
-### Step 4: Verify deployment
+### Step 3: Verify deployment
 
 ```bash
 # Check health
@@ -232,24 +206,40 @@ curl -X POST https://<your-app-url>/api/v1/hotel/lookup \
 
 ### What the deployment creates
 
-The `deploy.ps1` script and Bicep template create:
+The `deploy.ps1` script and Bicep template create the complete Azure environment:
 
 1. **Resource Group** in Sweden Central
-2. **Azure Container Registry** (Basic SKU) — stores the Docker image
-3. **Log Analytics Workspace** — collects container logs
-4. **Container Apps Environment** — managed Kubernetes environment
-5. **Container App** — runs the API with:
-   - External HTTPS ingress on port 8000
-   - Auto-scaling 0-3 replicas based on HTTP load
-   - All Azure OpenAI and Foundry configuration passed as environment variables
-6. **Bing Search v7** (optional, with `-DeployBingSearch`) — provides Bing API access for the grounding agent. After deployment, connect it to your AI Foundry project manually.
+2. **Azure AI Services** (kind: AIServices) — provides OpenAI and AI Foundry capabilities
+3. **Model Deployments** — chat model (GPT-4) + Bing Grounding model (GPT-4.1-mini)
+4. **Bing Search v7** — web search API for the grounding agent
+5. **Storage Account + Key Vault** — backing resources for AI Hub
+6. **AI Hub** — Azure AI Foundry hub with system-assigned managed identity
+7. **AI Services Connection** — links AI Services to the Hub
+8. **Bing Grounding Connection** — links Bing Search to the Hub for agent grounding
+9. **AI Project** — Azure AI Foundry project under the Hub
+10. **Azure Container Registry** (Basic SKU) — stores the Docker image
+11. **Log Analytics Workspace** — collects container logs
+12. **Container Apps Environment** — managed Kubernetes environment
+13. **Container App** — runs the API with:
+    - System-assigned managed identity with Cognitive Services User role
+    - External HTTPS ingress on port 8000
+    - Auto-scaling 0–3 replicas based on HTTP load
+    - All environment variables auto-populated from deployed resources
+
+### Redeployment (code changes only)
+
+To redeploy just the application without reprovisioning infrastructure:
+
+```powershell
+.\deploy.ps1 -ResourceGroupName "rg-hotel-api-swedencentral" -SkipInfrastructure
+```
 
 ### Infrastructure as Code
 
 The infrastructure is defined in Bicep:
 
-- [infra/main.bicep](infra/main.bicep) — Container Registry, Container Apps Environment, Container App
-- [infra/main.parameters.json](infra/main.parameters.json) — Parameter values (optional)
+- [infra/main.bicep](infra/main.bicep) — Complete Azure infrastructure (AI Services, Hub, Project, Bing, Container Apps, RBAC)
+- [infra/main.parameters.json](infra/main.parameters.json) — Default parameter values
 
 ## API Endpoints
 
@@ -440,7 +430,7 @@ HotelTVLicensing/
 3. **Add retry queues** for failed lookups
 4. **Add webhook support** for async batch processing
 5. **Add authentication** (API keys, OAuth)
-6. **Add managed identity** for Container App to access AI Foundry without API keys
+6. ~~**Add managed identity** for Container App to access AI Foundry without API keys~~ Done
 
 ## License
 

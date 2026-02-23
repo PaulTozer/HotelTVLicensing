@@ -8,29 +8,23 @@
     "baseName": {
       "value": "hotelapi"
     },
-    "azureOpenAiEndpoint": {
-      "value": ""
-    },
-    "azureOpenAiApiKey": {
-      "value": ""
-    },
-    "azureOpenAiDeployment": {
+    "openAiChatModel": {
       "value": "gpt-4"
     },
-    "azureAiProjectEndpoint": {
-      "value": ""
-    },
-    "bingConnectionName": {
-      "value": ""
-    },
-    "azureAiModelDeployment": {
+    "foundryModel": {
       "value": "gpt-4.1-mini"
-    },
-    "deployBingSearch": {
-      "value": false
     },
     "bingSearchSku": {
       "value": "S1"
+    },
+    "bingConnectionName": {
+      "value": "bing-grounding"
+    },
+    "chatModelCapacity": {
+      "value": 30
+    },
+    "foundryModelCapacity": {
+      "value": 30
     }
   }
 }

@@ -128,8 +128,8 @@ The API uses an Azure AI Foundry agent with Bing Grounding to search for hotel i
 ### 3. Bing Grounding Connection
 
 1. In your Azure AI Foundry project, go to **Connected resources**
-2. Add a **Bing Search** connection (requires a Bing Search resource in Azure)
-3. Note the **connection name** (e.g., `my-bing-grounding`)
+2. Add a **Grounding with Bing Search** connection (requires a Bing Grounding resource in Azure — kind `Bing.Grounding`, SKU `G1`)
+3. Note the **connection name** (e.g., `bing-grounding`)
 
 ### 4. Model Deployment for Bing Agent
 
@@ -207,16 +207,12 @@ az login
 | Parameter | Required | Default | Description |
 |-----------|----------|---------|-------------|
 | `ResourceGroupName` | No | `rg-hotel-api-swedencentral` | Azure resource group name |
-| `AzureOpenAiApiKey` | **Yes** | - | Azure OpenAI API key |
-| `AzureAiProjectEndpoint` | **Yes** | - | Azure AI Foundry project endpoint |
-| `BingConnectionName` | **Yes** | - | Bing Grounding connection name in AI Foundry |
-| `AzureAiModelDeployment` | No | `gpt-4.1-mini` | Model for Bing Grounding agent |
-| `AzureOpenAiEndpoint` | **Yes** | - | Azure OpenAI endpoint (e.g., `https://your-resource.openai.azure.com/`) |
-| `AzureOpenAiDeployment` | No | `gpt-4` | Azure OpenAI deployment for AI extraction |
-| `DeployBingSearch` | No | `false` | Switch to create a Bing Search v7 resource |
-| `BingSearchSku` | No | `S1` | Bing Search pricing tier (`S1` or `F1` free) |
 | `Location` | No | `swedencentral` | Azure region |
 | `BaseName` | No | `hotelapi` | Base name for Azure resources |
+| `OpenAiChatModel` | No | `gpt-4` | OpenAI model for AI extraction |
+| `FoundryModel` | No | `gpt-4.1-mini` | Model for Bing Grounding agent |
+| `BingConnectionName` | No | `bing-grounding` | Bing Grounding connection name in AI Foundry |
+| `SkipInfrastructure` | No | - | Switch to skip infra and only rebuild/push the Docker image |
 
 ### Step 4: Verify deployment
 
@@ -242,7 +238,9 @@ The `deploy.ps1` script and Bicep template create:
    - External HTTPS ingress on port 8000
    - Auto-scaling 0-3 replicas based on HTTP load
    - All Azure OpenAI and Foundry configuration passed as environment variables
-6. **Bing Search v7** (optional, with `-DeployBingSearch`) — provides Bing API access for the grounding agent. After deployment, connect it to your AI Foundry project manually.
+6. **Grounding with Bing Search** (Bing.Grounding / G1) — provides Bing Grounding API access for the AI Foundry agent
+7. **AI Hub + AI Project** — Azure AI Foundry workspace with AI Services connection (AAD auth)
+8. **RBAC Role Assignments** — Cognitive Services User + AcrPull for the Container App managed identity
 
 ### Infrastructure as Code
 
@@ -435,7 +433,7 @@ The API uses Playwright to handle JavaScript-heavy websites (SPAs, React, Vue, A
 - For 10,000 hotels: ~$10-50
 
 **Azure AI Foundry (Bing Grounding Agent):**
-- Bing Search API pricing applies (based on your Bing Search resource tier)
+- Grounding with Bing Search pricing applies (G1 tier)
 - Agent API calls use the deployed model's token pricing
 
 ## Project Structure

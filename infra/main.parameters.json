@@ -11,8 +11,8 @@
     "azureOpenAiEndpoint": {
       "value": ""
     },
-    "azureOpenAiApiKey": {
-      "value": ""
+    "foundryModel": {
+      "value": "gpt-4.1-mini"
     },
     "azureOpenAiDeployment": {
       "value": "gpt-4"

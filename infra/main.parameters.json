@@ -9,13 +9,28 @@
       "value": "hotelapi"
     },
     "azureOpenAiEndpoint": {
-      "value": "https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/"
+      "value": ""
     },
     "azureOpenAiApiKey": {
       "value": ""
     },
     "azureOpenAiDeployment": {
-      "value": "gpt-5.2-chat"
+      "value": "gpt-4"
+    },
+    "azureAiProjectEndpoint": {
+      "value": ""
+    },
+    "bingConnectionName": {
+      "value": ""
+    },
+    "azureAiModelDeployment": {
+      "value": "gpt-4.1-mini"
+    },
+    "deployBingSearch": {
+      "value": false
+    },
+    "bingSearchSku": {
+      "value": "S1"
     }
   }
 }

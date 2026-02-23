@@ -129,7 +129,7 @@ The API uses an Azure AI Foundry agent with Bing Grounding to search for hotel i
 
 1. In your Azure AI Foundry project, go to **Connected resources**
 2. Add a **Bing Search** connection (requires a Bing Search resource in Azure)
-3. Note the **connection name** (e.g., `PTGroundingBingSearchectup5`)
+3. Note the **connection name** (e.g., `my-bing-grounding`)
 
 ### 4. Model Deployment for Bing Agent
 
@@ -196,8 +196,9 @@ az login
 .\deploy.ps1 `
     -ResourceGroupName "rg-hotel-api-swedencentral" `
     -AzureOpenAiApiKey "your-azure-openai-api-key" `
+    -AzureOpenAiEndpoint "https://your-resource.openai.azure.com/" `
     -AzureAiProjectEndpoint "https://your-foundry.services.ai.azure.com/api/projects/yourproject" `
-    -BingConnectionName "your-bing-connection-name" `
+    -BingConnectionName "my-bing-grounding" `
     -AzureAiModelDeployment "gpt-4.1-mini"
 ```
 
@@ -210,8 +211,10 @@ az login
 | `AzureAiProjectEndpoint` | **Yes** | - | Azure AI Foundry project endpoint |
 | `BingConnectionName` | **Yes** | - | Bing Grounding connection name in AI Foundry |
 | `AzureAiModelDeployment` | No | `gpt-4.1-mini` | Model for Bing Grounding agent |
-| `AzureOpenAiEndpoint` | No | `https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/` | Azure OpenAI endpoint |
-| `AzureOpenAiDeployment` | No | `gpt-5.2-chat` | Azure OpenAI deployment for AI extraction |
+| `AzureOpenAiEndpoint` | **Yes** | - | Azure OpenAI endpoint (e.g., `https://your-resource.openai.azure.com/`) |
+| `AzureOpenAiDeployment` | No | `gpt-4` | Azure OpenAI deployment for AI extraction |
+| `DeployBingSearch` | No | `false` | Switch to create a Bing Search v7 resource |
+| `BingSearchSku` | No | `S1` | Bing Search pricing tier (`S1` or `F1` free) |
 | `Location` | No | `swedencentral` | Azure region |
 | `BaseName` | No | `hotelapi` | Base name for Azure resources |
 
@@ -239,6 +242,7 @@ The `deploy.ps1` script and Bicep template create:
    - External HTTPS ingress on port 8000
    - Auto-scaling 0-3 replicas based on HTTP load
    - All Azure OpenAI and Foundry configuration passed as environment variables
+6. **Bing Search v7** (optional, with `-DeployBingSearch`) — provides Bing API access for the grounding agent. After deployment, connect it to your AI Foundry project manually.
 
 ### Infrastructure as Code
 

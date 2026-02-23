@@ -55,7 +55,7 @@
           "type": "Http",
           "inputs": {
             "method": "POST",
-            "uri": "https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io/api/v1/hotel/batch",
+            "uri": "https://<your-app-name>.<unique-id>.swedencentral.azurecontainerapps.io/api/v1/hotel/batch",
             "headers": {
               "Content-Type": "application/json"
             },

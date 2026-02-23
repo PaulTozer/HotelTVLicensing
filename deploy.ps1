@@ -24,8 +24,19 @@
 .PARAMETER AzureAiModelDeployment
     Model deployment name for the Bing Grounding agent (must be gpt-4.1-mini)
 
+.PARAMETER AzureOpenAiEndpoint
+    Your Azure OpenAI endpoint URL
+
+.PARAMETER AzureOpenAiDeployment
+    Azure OpenAI model deployment name for AI extraction
+.PARAMETER DeployBingSearch
+    Switch to also deploy a Bing Search v7 resource. After deployment, connect it
+    to your AI Foundry project manually via the portal.
+
+.PARAMETER BingSearchSku
+    Pricing tier for the Bing Search resource (S1 recommended, F1 = free tier)
 .EXAMPLE
-    .\deploy.ps1 -ResourceGroupName "rg-hotel-api" -AzureOpenAiApiKey "your-key" -AzureAiProjectEndpoint "https://your-foundry.services.ai.azure.com/api/projects/yourproject" -BingConnectionName "your-bing-connection"
+    .\deploy.ps1 -ResourceGroupName "rg-hotel-api" -AzureOpenAiApiKey "your-key" -AzureOpenAiEndpoint "https://your-resource.openai.azure.com/" -AzureAiProjectEndpoint "https://your-foundry.services.ai.azure.com/api/projects/yourproject" -BingConnectionName "my-bing-grounding"
 #>
 
 param(
@@ -44,11 +55,17 @@ param(
     [Parameter(Mandatory=$false)]
     [string]$AzureAiModelDeployment = "gpt-4.1-mini",
     
-    [Parameter(Mandatory=$false)]
-    [string]$AzureOpenAiEndpoint = "https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/",
+    [Parameter(Mandatory=$true)]
+    [string]$AzureOpenAiEndpoint,
     
     [Parameter(Mandatory=$false)]
-    [string]$AzureOpenAiDeployment = "gpt-5.2-chat",
+    [string]$AzureOpenAiDeployment = "gpt-4",
+    
+    [Parameter(Mandatory=$false)]
+    [switch]$DeployBingSearch,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$BingSearchSku = "S1",
     
     [Parameter(Mandatory=$false)]
     [string]$Location = "swedencentral",
@@ -96,16 +113,28 @@ $deploymentOutput = az deployment group create `
     --parameters azureAiProjectEndpoint=$AzureAiProjectEndpoint `
     --parameters bingConnectionName=$BingConnectionName `
     --parameters azureAiModelDeployment=$AzureAiModelDeployment `
+    --parameters deployBingSearch=$($DeployBingSearch.IsPresent.ToString().ToLower()) `
+    --parameters bingSearchSku=$BingSearchSku `
     --query "properties.outputs" `
     --output json | ConvertFrom-Json
 
 $acrLoginServer = $deploymentOutput.containerRegistryLoginServer.value
 $acrName = $deploymentOutput.containerRegistryName.value
 $appUrl = $deploymentOutput.containerAppUrl.value
+$bingSearchResource = $deploymentOutput.bingSearchResourceName.value
 
 Write-Host "Infrastructure deployed successfully!" -ForegroundColor Green
 Write-Host "  Container Registry: $acrLoginServer" -ForegroundColor Gray
 Write-Host "  App URL: $appUrl" -ForegroundColor Gray
+if ($DeployBingSearch -and $bingSearchResource -ne "not-deployed") {
+    Write-Host "  Bing Search Resource: $bingSearchResource" -ForegroundColor Gray
+    Write-Host ""
+    Write-Host "  IMPORTANT: Connect this Bing Search resource to your AI Foundry project:" -ForegroundColor Yellow
+    Write-Host "    1. Go to https://ai.azure.com > your project > Connected resources" -ForegroundColor Gray
+    Write-Host "    2. Add a new Bing Search connection using the key from:" -ForegroundColor Gray
+    Write-Host "       az cognitiveservices account keys list --name $bingSearchResource --resource-group $ResourceGroupName" -ForegroundColor Gray
+    Write-Host "    3. Use the connection name you chose as the BingConnectionName parameter" -ForegroundColor Gray
+}
 Write-Host ""
 
 # Step 3: Login to Container Registry

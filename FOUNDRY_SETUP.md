@@ -7,9 +7,9 @@ This guide will help you set up an AI agent in Azure AI Foundry that uses your H
 
 ## Prerequisites
 
-✅ You have an Azure AI Foundry project called "firstproject"  
+✅ You have an Azure AI Foundry project  
 ✅ You have the Hotel API deployed at:  
-   `https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io`
+   `https://<your-app-name>.azurecontainerapps.io`
 
 ---
 
@@ -17,7 +17,7 @@ This guide will help you set up an AI agent in Azure AI Foundry that uses your H
 
 1. Go to **https://ai.azure.com** 
 2. Click on **"Preview portal"** if you're not already in the new portal
-3. Select your project **"firstproject"**
+3. Select your project
 
 ---
 
@@ -93,7 +93,7 @@ IMPORTANT:
   },
   "servers": [
     {
-      "url": "https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io"
+      "url": "https://<your-app-name>.<unique-id>.swedencentral.azurecontainerapps.io"
     }
   ],
   "paths": {
@@ -255,7 +255,7 @@ The agent will output results like this:
 
 ## API Endpoint Reference
 
-- **Base URL**: `https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io`
+- **Base URL**: `https://<your-app-name>.<unique-id>.swedencentral.azurecontainerapps.io`
 - **Single Lookup**: `POST /api/v1/hotel/lookup`
 - **Batch Lookup**: `POST /api/v1/hotel/batch`
 - **Health Check**: `GET /health`

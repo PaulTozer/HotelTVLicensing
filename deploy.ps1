@@ -3,11 +3,19 @@
     Deploys the Hotel Information API and ALL supporting infrastructure to Azure.
 
 .DESCRIPTION
-    This script:
-    1. Creates a resource group in Sweden Central
-    2. Deploys Azure Container Registry and Container Apps infrastructure
-    3. Builds and pushes the Docker image
-    4. Deploys the Container App with Azure AI Foundry Bing Grounding configuration
+    This script provisions the complete Azure environment from scratch:
+      1. Azure AI Services (OpenAI + AI Foundry) with model deployments
+      2. Bing Search v7 resource
+      3. AI Hub + AI Project (Azure AI Foundry)
+      4. AI Services connection to the Hub
+      5. Bing Grounding connection to the Hub
+      6. Azure Container Registry
+      7. Azure Container Apps (with managed identity + RBAC)
+      8. Builds and pushes the Docker image
+      9. Updates the Container App with the new image
+
+    No API keys or endpoints need to be provided - everything is created
+    and wired up automatically by the Bicep template.
 
 .PARAMETER ResourceGroupName
     Name of the Azure resource group to create/use (default: rg-hotel-api-swedencentral)
@@ -41,57 +49,14 @@
     # Deploy with specific models
     .\deploy.ps1 -ResourceGroupName "rg-hotel-api" -OpenAiChatModel "gpt-4o" -FoundryModel "gpt-4.1-mini"
 
-.PARAMETER AzureAiProjectEndpoint
-    Azure AI Foundry project endpoint for Bing Grounding agent
-
-.PARAMETER BingConnectionName
-    Name of the Bing Grounding connection in Azure AI Foundry
-
-.PARAMETER AzureAiModelDeployment
-    Model deployment name for the Bing Grounding agent (must be gpt-4.1-mini)
-
-.PARAMETER AzureOpenAiEndpoint
-    Your Azure OpenAI endpoint URL
-
-.PARAMETER AzureOpenAiDeployment
-    Azure OpenAI model deployment name for AI extraction
-.PARAMETER DeployBingSearch
-    Switch to also deploy a Bing Search v7 resource. After deployment, connect it
-    to your AI Foundry project manually via the portal.
-
-.PARAMETER BingSearchSku
-    Pricing tier for the Bing Search resource (S1 recommended, F1 = free tier)
 .EXAMPLE
-    .\deploy.ps1 -ResourceGroupName "rg-hotel-api" -AzureOpenAiApiKey "your-key" -AzureOpenAiEndpoint "https://your-resource.openai.azure.com/" -AzureAiProjectEndpoint "https://your-foundry.services.ai.azure.com/api/projects/yourproject" -BingConnectionName "my-bing-grounding"
+    # Redeploy just the app (skip infra)
+    .\deploy.ps1 -ResourceGroupName "rg-hotel-api" -SkipInfrastructure
 #>
 
 param(
     [Parameter(Mandatory=$false)]
     [string]$ResourceGroupName = "rg-hotel-api-swedencentral",
-    
-    [Parameter(Mandatory=$true)]
-    [string]$AzureOpenAiApiKey,
-    
-    [Parameter(Mandatory=$true)]
-    [string]$AzureAiProjectEndpoint,
-    
-    [Parameter(Mandatory=$true)]
-    [string]$BingConnectionName,
-    
-    [Parameter(Mandatory=$false)]
-    [string]$AzureAiModelDeployment = "gpt-4.1-mini",
-    
-    [Parameter(Mandatory=$true)]
-    [string]$AzureOpenAiEndpoint,
-    
-    [Parameter(Mandatory=$false)]
-    [string]$AzureOpenAiDeployment = "gpt-4",
-    
-    [Parameter(Mandatory=$false)]
-    [switch]$DeployBingSearch,
-    
-    [Parameter(Mandatory=$false)]
-    [string]$BingSearchSku = "S1",
     
     [Parameter(Mandatory=$false)]
     [string]$Location = "swedencentral",
@@ -193,40 +158,98 @@ Write-Host ""
 # Step 3: Deploy Infrastructure (Bicep)
 # ─────────────────────────────────────────────────
 
-$deploymentOutput = az deployment group create `
-    --resource-group $ResourceGroupName `
-    --template-file "infra/main.bicep" `
-    --parameters location=$Location `
-    --parameters baseName=$BaseName `
-    --parameters azureOpenAiEndpoint=$AzureOpenAiEndpoint `
-    --parameters azureOpenAiApiKey=$AzureOpenAiApiKey `
-    --parameters azureOpenAiDeployment=$AzureOpenAiDeployment `
-    --parameters azureAiProjectEndpoint=$AzureAiProjectEndpoint `
-    --parameters bingConnectionName=$BingConnectionName `
-    --parameters azureAiModelDeployment=$AzureAiModelDeployment `
-    --parameters deployBingSearch=$($DeployBingSearch.IsPresent.ToString().ToLower()) `
-    --parameters bingSearchSku=$BingSearchSku `
-    --query "properties.outputs" `
-    --output json | ConvertFrom-Json
-
-$acrLoginServer = $deploymentOutput.containerRegistryLoginServer.value
-$acrName = $deploymentOutput.containerRegistryName.value
-$appUrl = $deploymentOutput.containerAppUrl.value
-$bingSearchResource = $deploymentOutput.bingSearchResourceName.value
-
-Write-Host "Infrastructure deployed successfully!" -ForegroundColor Green
-Write-Host "  Container Registry: $acrLoginServer" -ForegroundColor Gray
-Write-Host "  App URL: $appUrl" -ForegroundColor Gray
-if ($DeployBingSearch -and $bingSearchResource -ne "not-deployed") {
-    Write-Host "  Bing Search Resource: $bingSearchResource" -ForegroundColor Gray
+if (-not $SkipInfrastructure) {
+    Write-Host "Step 3: Deploying ALL infrastructure via Bicep..." -ForegroundColor Yellow
+    Write-Host "  This creates:" -ForegroundColor Gray
+    Write-Host "    - Azure AI Services (OpenAI + AI Foundry)" -ForegroundColor Gray
+    Write-Host "    - Model deployments: $OpenAiChatModel + $FoundryModel" -ForegroundColor Gray
+    Write-Host "    - Bing Search v7 ($BingSearchSku)" -ForegroundColor Gray
+    Write-Host "    - AI Hub + AI Project" -ForegroundColor Gray
+    Write-Host "    - Storage Account + Key Vault (for Hub)" -ForegroundColor Gray
+    Write-Host "    - Container Registry + Container Apps" -ForegroundColor Gray
+    Write-Host "    - Managed Identity + RBAC role assignments" -ForegroundColor Gray
+    Write-Host "  This may take 10-15 minutes on first deploy..." -ForegroundColor Gray
     Write-Host ""
-    Write-Host "  IMPORTANT: Connect this Bing Search resource to your AI Foundry project:" -ForegroundColor Yellow
-    Write-Host "    1. Go to https://ai.azure.com > your project > Connected resources" -ForegroundColor Gray
-    Write-Host "    2. Add a new Bing Search connection using the key from:" -ForegroundColor Gray
-    Write-Host "       az cognitiveservices account keys list --name $bingSearchResource --resource-group $ResourceGroupName" -ForegroundColor Gray
-    Write-Host "    3. Use the connection name you chose as the BingConnectionName parameter" -ForegroundColor Gray
-}
-Write-Host ""
+
+    $deploymentOutput = az deployment group create `
+        --resource-group $ResourceGroupName `
+        --template-file "infra/main.bicep" `
+        --parameters location=$Location `
+        --parameters baseName=$BaseName `
+        --parameters openAiChatModel=$OpenAiChatModel `
+        --parameters foundryModel=$FoundryModel `
+        --parameters bingSearchSku=$BingSearchSku `
+        --parameters bingConnectionName=$BingConnectionName `
+        --query "properties.outputs" `
+        --output json 2>&1
+
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "ERROR: Infrastructure deployment failed!" -ForegroundColor Red
+        Write-Host $deploymentOutput -ForegroundColor Red
+        Write-Host ""
+        Write-Host "Common issues:" -ForegroundColor Yellow
+        Write-Host "  - Model not available in region: Check 'az cognitiveservices account list-models --location $Location'" -ForegroundColor Gray
+        Write-Host "  - Insufficient quota: Request more TPM quota via the Azure portal" -ForegroundColor Gray
+        Write-Host "  - Bing provider not registered: Run 'az provider register --namespace Microsoft.Bing'" -ForegroundColor Gray
+        exit 1
+    }
+
+    $outputs = $deploymentOutput | ConvertFrom-Json
+
+    $acrLoginServer = $outputs.containerRegistryLoginServer.value
+    $acrName = $outputs.containerRegistryName.value
+    $appUrl = $outputs.containerAppUrl.value
+    $aiServicesEndpoint = $outputs.aiServicesEndpoint.value
+    $aiServicesName = $outputs.aiServicesName.value
+    $aiProjectName = $outputs.aiProjectName.value
+    $aiProjectEndpoint = $outputs.aiProjectEndpoint.value
+    $bingSearchName = $outputs.bingSearchName.value
+    $aiHubName = $outputs.aiHubName.value
+
+    Write-Host "  Infrastructure deployed successfully!" -ForegroundColor Green
+    Write-Host "    AI Services:      $aiServicesEndpoint" -ForegroundColor Gray
+    Write-Host "    AI Project:       $aiProjectEndpoint" -ForegroundColor Gray
+    Write-Host "    Bing Search:      $bingSearchName" -ForegroundColor Gray
+    Write-Host "    AI Hub:           $aiHubName" -ForegroundColor Gray
+    Write-Host "    Container Registry: $acrLoginServer" -ForegroundColor Gray
+    Write-Host "    App URL:          $appUrl" -ForegroundColor Gray
+    Write-Host ""
+
+    # ─────────────────────────────────────────────────
+    # Step 4: Create Bing Grounding Connection
+    # ─────────────────────────────────────────────────
+
+    Write-Host "Step 4: Creating Bing Grounding connection in AI Hub..." -ForegroundColor Yellow
+    
+    # Get Bing Search key
+    $bingKeyJson = az resource invoke-action `
+        --action listKeys `
+        --ids (az resource show --resource-group $ResourceGroupName --resource-type "Microsoft.Bing/accounts" --name $bingSearchName --query id -o tsv) `
+        --api-version "2020-06-10" `
+        --output json 2>$null
+    
+    if ($bingKeyJson) {
+        $bingKey = ($bingKeyJson | ConvertFrom-Json).key1
+
+        # Create connection via REST API
+        $token = az account get-access-token --query accessToken -o tsv
+        $hubResourceId = az resource show --resource-group $ResourceGroupName --resource-type "Microsoft.MachineLearningServices/workspaces" --name $aiHubName --query id -o tsv 2>$null
+        
+        if ($hubResourceId) {
+            $connectionBody = @{
+                properties = @{
+                    authType = "ApiKey"
+                    category = "ApiKey"
+                    isSharedToAll = $true
+                    target = "https://api.bing.microsoft.com/"
+                    credentials = @{
+                        key = $bingKey
+                    }
+                    metadata = @{
+                        ApiType = "Bing"
+                    }
+                }
+            } | ConvertTo-Json -Depth 5
 
             $connectionUri = "https://management.azure.com${hubResourceId}/connections/${BingConnectionName}?api-version=2024-10-01"
             

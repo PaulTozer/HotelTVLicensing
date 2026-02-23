@@ -94,3 +94,4 @@ class HealthResponse(BaseModel):
     version: str
     ai_provider: str
     ai_configured: bool
+    search_provider: str = "Unknown"

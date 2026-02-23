@@ -14,8 +14,14 @@ AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")
 AZURE_OPENAI_FALLBACK_DEPLOYMENT = os.getenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", "gpt-4.1-mini")
 
-# SerpAPI Configuration (for reliable Google search)
+# SerpAPI Configuration (fallback search - replaced by Bing Grounding)
 SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
+
+# Azure AI Foundry Configuration (for Bing Grounding agent)
+AZURE_AI_PROJECT_ENDPOINT = os.getenv("AZURE_AI_PROJECT_ENDPOINT", "https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/api/projects/firstproject")
+AZURE_AI_MODEL_DEPLOYMENT = os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "gpt-4.1-mini")
+BING_CONNECTION_NAME = os.getenv("BING_CONNECTION_NAME", "PTGroundingBingSearchectup5")
+USE_BING_GROUNDING = os.getenv("USE_BING_GROUNDING", "true").lower() == "true"
 
 # Redis Configuration
 REDIS_URL = os.getenv("REDIS_URL", "redis://localhost:6379")

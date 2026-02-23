@@ -69,7 +69,7 @@ class HotelInfoResponse(BaseModel):
                 "rooms_min": 201,
                 "rooms_max": 201,
                 "rooms_source_notes": "Found on hotel website About page: '201 luxurious bedrooms'",
-                "website_source_url": "https://duckduckgo.com search result",
+                "website_source_url": "Bing Grounding",
                 "phone_source_url": "https://www.grandbrighton.co.uk/contact",
                 "status": "success",
                 "last_checked": "2024-02-06T10:30:00Z",

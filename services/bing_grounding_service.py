@@ -1,6 +1,6 @@
 """
 Bing Grounding Service - Uses Azure AI Foundry Agent with Bing Grounding
-to search for hotel information, replacing SerpAPI/DuckDuckGo.
+to search for hotel information.
 
 The HotelTVSearch agent uses Bing grounding to find:
 - Official hotel websites

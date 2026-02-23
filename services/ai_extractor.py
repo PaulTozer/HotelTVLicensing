@@ -7,7 +7,6 @@ from typing import Optional, Dict, Any, List
 from openai import OpenAI, AzureOpenAI, RateLimitError, APIError
 
 from config import (
-    OPENAI_API_KEY, 
     AZURE_OPENAI_ENDPOINT, 
     AZURE_OPENAI_API_KEY,
     AZURE_OPENAI_DEPLOYMENT,
@@ -70,11 +69,8 @@ Respond in valid JSON format with this exact structure:
             self.model = AZURE_OPENAI_DEPLOYMENT
             self.fallback_model = AZURE_OPENAI_FALLBACK_DEPLOYMENT
             logger.info(f"Using Azure OpenAI: {self.model} (fallback: {self.fallback_model})")
-        elif OPENAI_API_KEY:
-            self.client = OpenAI(api_key=OPENAI_API_KEY)
-            logger.info("Using OpenAI")
         else:
-            logger.warning("No AI provider configured!")
+            logger.warning("No AI provider configured! Set AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY.")
     
     @property
     def is_configured(self) -> bool:
@@ -85,8 +81,6 @@ Respond in valid JSON format with this exact structure:
         """Get the name of the configured AI provider"""
         if USE_AZURE_OPENAI:
             return "Azure OpenAI"
-        elif OPENAI_API_KEY:
-            return "OpenAI"
         return "None"
     
     async def extract_hotel_info(

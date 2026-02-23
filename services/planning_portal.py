@@ -410,8 +410,7 @@ class PlanningPortalService:
         Fallback: Search Google for planning applications.
         Uses site-specific search to find applications.
         """
-        # This could be implemented using DuckDuckGo search with site: operator
-        # For now, return None
+        # Not implemented - Bing Grounding handles search
         return None
     
     async def _search_via_web(
@@ -421,18 +420,40 @@ class PlanningPortalService:
         postcode: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         """
-        Search for planning applications via DuckDuckGo.
+        Search for planning applications via web search.
         Looks for planning portal pages that mention the hotel and room counts.
         """
-        from duckduckgo_search import DDGS
+        import httpx
+        from urllib.parse import quote_plus
+        from bs4 import BeautifulSoup
         
         # Build search query
         location = city or postcode or ""
         query = f'"{hotel_name}" planning application hotel rooms {location}'
+        encoded_query = quote_plus(query)
         
         try:
-            ddgs = DDGS()
-            results = ddgs.text(query, max_results=5)
+            # Use Bing search scraping as fallback
+            url = f"https://www.bing.com/search?q={encoded_query}&count=5"
+            headers = {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            }
+            
+            async with httpx.AsyncClient() as client:
+                response = await client.get(url, headers=headers, follow_redirects=True, timeout=10.0)
+                response.raise_for_status()
+            
+            soup = BeautifulSoup(response.text, 'lxml')
+            results = []
+            for item in soup.select('li.b_algo'):
+                title_elem = item.select_one('h2 a')
+                desc_elem = item.select_one('.b_caption p')
+                if title_elem:
+                    results.append({
+                        'href': title_elem.get('href', ''),
+                        'title': title_elem.get_text(strip=True),
+                        'body': desc_elem.get_text(strip=True) if desc_elem else ''
+                    })
             
             for result in results:
                 url = result.get('href', '')

@@ -7,7 +7,7 @@
     1. Creates a resource group in Sweden Central
     2. Deploys Azure Container Registry and Container Apps infrastructure
     3. Builds and pushes the Docker image
-    4. Deploys the Container App
+    4. Deploys the Container App with Azure AI Foundry Bing Grounding configuration
 
 .PARAMETER ResourceGroupName
     Name of the Azure resource group to create/use
@@ -15,8 +15,17 @@
 .PARAMETER AzureOpenAiApiKey
     Your Azure OpenAI API key
 
+.PARAMETER AzureAiProjectEndpoint
+    Azure AI Foundry project endpoint for Bing Grounding agent
+
+.PARAMETER BingConnectionName
+    Name of the Bing Grounding connection in Azure AI Foundry
+
+.PARAMETER AzureAiModelDeployment
+    Model deployment name for the Bing Grounding agent (must be gpt-4.1-mini)
+
 .EXAMPLE
-    .\deploy.ps1 -ResourceGroupName "rg-hotel-api" -AzureOpenAiApiKey "your-key-here"
+    .\deploy.ps1 -ResourceGroupName "rg-hotel-api" -AzureOpenAiApiKey "your-key" -AzureAiProjectEndpoint "https://your-foundry.services.ai.azure.com/api/projects/yourproject" -BingConnectionName "your-bing-connection"
 #>
 
 param(
@@ -25,6 +34,21 @@ param(
     
     [Parameter(Mandatory=$true)]
     [string]$AzureOpenAiApiKey,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$AzureAiProjectEndpoint,
+    
+    [Parameter(Mandatory=$true)]
+    [string]$BingConnectionName,
+    
+    [Parameter(Mandatory=$false)]
+    [string]$AzureAiModelDeployment = "gpt-4.1-mini",
+    
+    [Parameter(Mandatory=$false)]
+    [string]$AzureOpenAiEndpoint = "https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/",
+    
+    [Parameter(Mandatory=$false)]
+    [string]$AzureOpenAiDeployment = "gpt-5.2-chat",
     
     [Parameter(Mandatory=$false)]
     [string]$Location = "swedencentral",
@@ -66,9 +90,12 @@ $deploymentOutput = az deployment group create `
     --template-file "infra/main.bicep" `
     --parameters location=$Location `
     --parameters baseName=$BaseName `
-    --parameters azureOpenAiEndpoint="https://yourdeployment.services.ai.azure.com/" `
+    --parameters azureOpenAiEndpoint=$AzureOpenAiEndpoint `
     --parameters azureOpenAiApiKey=$AzureOpenAiApiKey `
-    --parameters azureOpenAiDeployment="gpt-5.2-chat" `
+    --parameters azureOpenAiDeployment=$AzureOpenAiDeployment `
+    --parameters azureAiProjectEndpoint=$AzureAiProjectEndpoint `
+    --parameters bingConnectionName=$BingConnectionName `
+    --parameters azureAiModelDeployment=$AzureAiModelDeployment `
     --query "properties.outputs" `
     --output json | ConvertFrom-Json
 

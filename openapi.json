@@ -134,7 +134,7 @@
                     },
                     "search_provider": {
                       "type": "string",
-                      "description": "The search provider being used (Bing Grounding or SerpAPI/DuckDuckGo)"
+                      "description": "The search provider being used (Bing Grounding)"
                     }
                   }
                 }

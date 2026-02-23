@@ -4,14 +4,14 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
 
 ## Features
 
-- 🔍 **Bing Grounding Search**: Uses Azure AI Foundry agent with Bing Grounding to find hotel information
-- 🤖 **AI-Powered Agent**: HotelTVSearch agent searches and extracts data in a single step
-- 🕷️ **Smart Web Scraping**: Optionally deep-scrapes hotel websites for additional data
-- 🧠 **AI Extraction**: Uses Azure OpenAI GPT to extract structured data from unstructured content
-- 📞 **UK Phone Validation**: Validates and formats UK phone numbers
-- 📊 **Confidence Scoring**: Provides confidence scores for extracted data
-- 🐳 **Containerized**: Deployed on Azure Container Apps
-- 💾 **Redis Caching**: Caches results with configurable TTL
+- **Bing Grounding Search**: Uses Azure AI Foundry agent with Bing Grounding to find hotel information
+- **AI-Powered Agent**: HotelTVSearch agent searches and extracts data in a single step
+- **Smart Web Scraping**: Optionally deep-scrapes hotel websites for additional data
+- **AI Extraction**: Uses Azure OpenAI GPT to extract structured data from unstructured content
+- **UK Phone Validation**: Validates and formats UK phone numbers
+- **Confidence Scoring**: Provides confidence scores for extracted data
+- **Containerized**: Deployed on Azure Container Apps
+- **Redis Caching**: Caches results with configurable TTL
 
 ## How It Works - Workflow
 
@@ -38,8 +38,6 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
                          │   the web via Bing  │
                          │ • Returns website,  │
                          │   phone, rooms      │
-                         │ • Fallback: SerpAPI │
-                         │   / DuckDuckGo      │
                          └──────────┬──────────┘
                                     │
                                     ▼
@@ -102,32 +100,61 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
 
 | Step | Component | Description |
 |------|-----------|-------------|
-| **1. Search** | `BingGroundingService` | Uses Azure AI Foundry HotelTVSearch agent with Bing Grounding to search the web. The agent can return the official website, phone number, and room count in a single call. Falls back to SerpAPI/DuckDuckGo if Bing Grounding is unavailable. |
-| **2. Validate** | `WebSearchService` | Tests candidate URLs with HTTP HEAD requests to verify they're accessible and respond correctly. |
+| **1. Search** | `BingGroundingService` | Uses Azure AI Foundry HotelTVSearch agent with Bing Grounding to search the web. The agent can return the official website, phone number, and room count in a single call. |
+| **2. Validate** | `HotelLookupService` | Tests candidate URLs with HTTP HEAD requests to verify they're accessible and respond correctly. |
 | **3. Scrape** | `WebScraperService` | Fetches the homepage HTML, then identifies and scrapes relevant subpages (rooms, accommodation, contact, about). Extracts clean text from up to 4 pages. |
 | **4. Extract** | `WebScraperService` | Pre-processes content using regex patterns to identify phone numbers (validated as UK format) and room count mentions (e.g., "150 rooms", "200 bedrooms"). |
 | **5. AI Verify** | `AIExtractorService` | Uses GPT to verify the scraped website matches the hotel being searched. Checks if hotel name and location appear in the content. |
 | **6. AI Extract** | `AIExtractorService` | GPT analyzes all content and pre-extracted candidates to determine: room count (min/max), best UK phone number, and provides source notes explaining where data was found. Returns a confidence score. |
 
-## Quick Start
+## Prerequisites
+
+Before deploying, you need to set up the following Azure resources:
+
+### 1. Azure OpenAI Service
+
+- Create an Azure OpenAI resource (Sweden Central recommended)
+- Deploy a model (e.g., `gpt-5.2-chat` or `gpt-4`) for AI extraction
+- Note down the **endpoint** and **API key**
+
+### 2. Azure AI Foundry Project
+
+The API uses an Azure AI Foundry agent with Bing Grounding to search for hotel information.
+
+1. Go to [Azure AI Foundry](https://ai.azure.com)
+2. Create or select a project
+3. Note the **project endpoint** (e.g., `https://your-foundry.services.ai.azure.com/api/projects/yourproject`)
+
+### 3. Bing Grounding Connection
+
+1. In your Azure AI Foundry project, go to **Connected resources**
+2. Add a **Bing Search** connection (requires a Bing Search resource in Azure)
+3. Note the **connection name** (e.g., `PTGroundingBingSearchectup5`)
+
+### 4. Model Deployment for Bing Agent
+
+- Deploy `gpt-4.1-mini` in your AI Foundry project
+- **Important**: Only `gpt-4.1-mini` works reliably with Bing Grounding tools. Other models (e.g., `gpt-5.2-chat`, `gpt-4.1`) may return errors.
+
+See [FOUNDRY_SETUP.md](FOUNDRY_SETUP.md) for detailed step-by-step instructions on setting up the Azure AI Foundry agent.
+
+## Quick Start (Local Development)
 
 ### 1. Set up environment variables
 
-Create a `.env` file with your API keys:
+Create a `.env` file:
 
 ```bash
-# Azure OpenAI (required)
+# Azure OpenAI (required for AI extraction)
 AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_KEY=your-azure-openai-key
 AZURE_OPENAI_DEPLOYMENT=gpt-4
 
-# Azure AI Foundry - Bing Grounding (primary search)
+# Azure AI Foundry - Bing Grounding (required for search)
 AZURE_AI_PROJECT_ENDPOINT=https://your-foundry.services.ai.azure.com/api/projects/yourproject
+AZURE_AI_MODEL_DEPLOYMENT_NAME=gpt-4.1-mini
 BING_CONNECTION_NAME=your-bing-connection
 USE_BING_GROUNDING=true
-
-# SerpAPI (fallback only, optional)
-# SERPAPI_API_KEY=your-serpapi-key
 ```
 
 ### 2. Run with Docker
@@ -147,6 +174,78 @@ uvicorn main:app --reload
 
 - **Swagger UI**: http://localhost:8000/docs
 - **Health Check**: http://localhost:8000/health
+
+## Deploying to Azure
+
+### Step 1: Install Prerequisites
+
+- [Azure CLI](https://docs.microsoft.com/en-us/cli/azure/install-azure-cli) (v2.50+)
+- An active Azure subscription
+- Azure OpenAI resource with a deployed model
+- Azure AI Foundry project with Bing Grounding connection (see Prerequisites above)
+
+### Step 2: Log in to Azure
+
+```powershell
+az login
+```
+
+### Step 3: Run the deployment script
+
+```powershell
+.\deploy.ps1 `
+    -ResourceGroupName "rg-hotel-api-swedencentral" `
+    -AzureOpenAiApiKey "your-azure-openai-api-key" `
+    -AzureAiProjectEndpoint "https://your-foundry.services.ai.azure.com/api/projects/yourproject" `
+    -BingConnectionName "your-bing-connection-name" `
+    -AzureAiModelDeployment "gpt-4.1-mini"
+```
+
+#### deploy.ps1 Parameters
+
+| Parameter | Required | Default | Description |
+|-----------|----------|---------|-------------|
+| `ResourceGroupName` | No | `rg-hotel-api-swedencentral` | Azure resource group name |
+| `AzureOpenAiApiKey` | **Yes** | - | Azure OpenAI API key |
+| `AzureAiProjectEndpoint` | **Yes** | - | Azure AI Foundry project endpoint |
+| `BingConnectionName` | **Yes** | - | Bing Grounding connection name in AI Foundry |
+| `AzureAiModelDeployment` | No | `gpt-4.1-mini` | Model for Bing Grounding agent |
+| `AzureOpenAiEndpoint` | No | `https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/` | Azure OpenAI endpoint |
+| `AzureOpenAiDeployment` | No | `gpt-5.2-chat` | Azure OpenAI deployment for AI extraction |
+| `Location` | No | `swedencentral` | Azure region |
+| `BaseName` | No | `hotelapi` | Base name for Azure resources |
+
+### Step 4: Verify deployment
+
+```bash
+# Check health
+curl https://<your-app-url>/health
+
+# Test a lookup
+curl -X POST https://<your-app-url>/api/v1/hotel/lookup \
+  -H "Content-Type: application/json" \
+  -d '{"name": "The Grand Hotel", "city": "Brighton"}'
+```
+
+### What the deployment creates
+
+The `deploy.ps1` script and Bicep template create:
+
+1. **Resource Group** in Sweden Central
+2. **Azure Container Registry** (Basic SKU) — stores the Docker image
+3. **Log Analytics Workspace** — collects container logs
+4. **Container Apps Environment** — managed Kubernetes environment
+5. **Container App** — runs the API with:
+   - External HTTPS ingress on port 8000
+   - Auto-scaling 0-3 replicas based on HTTP load
+   - All Azure OpenAI and Foundry configuration passed as environment variables
+
+### Infrastructure as Code
+
+The infrastructure is defined in Bicep:
+
+- [infra/main.bicep](infra/main.bicep) — Container Registry, Container Apps Environment, Container App
+- [infra/main.parameters.json](infra/main.parameters.json) — Parameter values (optional)
 
 ## API Endpoints
 
@@ -188,7 +287,7 @@ POST /api/v1/hotel/lookup
 ### Batch Lookup
 
 ```bash
-POST /api/v1/hotel/batch
+POST /api/v1/hotel/batch?fast=true
 ```
 
 **Request:**
@@ -201,6 +300,12 @@ POST /api/v1/hotel/batch
     ]
 }
 ```
+
+**Performance estimates:**
+- 25 hotels (fast mode): ~20-30 seconds
+- 25 hotels (full mode): ~60-120 seconds
+- 100 hotels (fast mode): ~1-2 minutes
+- 500 hotels (fast mode): ~5-10 minutes
 
 ## Response Fields
 
@@ -217,24 +322,6 @@ POST /api/v1/hotel/batch
 | `confidence_score` | AI confidence (0.0 - 1.0) |
 | `errors` | List of any issues encountered |
 
-## Status Codes
-
-- `success`: All information found with high confidence
-- `partial`: Some information found, but not all
-- `not_found`: Could not find the hotel or its website
-- `error`: An error occurred during processing
-
-## Cost Estimation
-
-**Azure OpenAI (GPT-4):**
-- ~$0.001 - $0.005 per hotel lookup
-- For 10,000 hotels: ~$10-50
-
-**SerpAPI (fallback only):**
-- Only used when Bing Grounding is unavailable
-- 100 free searches/month
-- Paid plans from $50/month for 5,000 searches
-
 ## Environment Variables
 
 | Variable | Description | Default |
@@ -242,16 +329,21 @@ POST /api/v1/hotel/batch
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint | - |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI key | - |
 | `AZURE_OPENAI_DEPLOYMENT` | Azure deployment name | `gpt-4` |
+| `AZURE_OPENAI_FALLBACK_DEPLOYMENT` | Fallback model deployment | `gpt-4.1-mini` |
 | `AZURE_AI_PROJECT_ENDPOINT` | Azure AI Foundry project endpoint | - |
-| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | Model for Bing grounding agent | `gpt-5.2-chat` |
-| `BING_CONNECTION_NAME` | Name of Bing connection in AI Foundry | - |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | Model for Bing grounding agent | `gpt-4.1-mini` |
+| `BING_CONNECTION_NAME` | Bing connection name in AI Foundry | - |
 | `USE_BING_GROUNDING` | Enable/disable Bing grounding | `true` |
-| `SERPAPI_API_KEY` | SerpAPI key (fallback search) | - |
 | `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
 | `REDIS_ENABLED` | Enable/disable Redis caching | `true` |
 | `CACHE_TTL_HOURS` | Cache time-to-live in hours | `24` |
-| `MAX_REQUESTS_PER_MINUTE` | Rate limit | `30` |
+| `MAX_REQUESTS_PER_MINUTE` | Rate limit | `60` |
 | `SCRAPE_TIMEOUT_SECONDS` | Web scrape timeout | `30` |
+| `BATCH_MAX_CONCURRENT` | Max concurrent lookups | `25` |
+| `BATCH_MAX_SIZE` | Max batch size | `500` |
+| `BING_MAX_CONCURRENT` | Max concurrent Bing searches | `15` |
+| `BING_THREAD_POOL_SIZE` | Thread pool for blocking SDK calls | `20` |
+| `BING_RETRY_MAX` | Max retries for Bing agent | `3` |
 | `LOG_LEVEL` | Logging level | `INFO` |
 
 ## Redis Caching
@@ -281,17 +373,6 @@ Redis is automatically started with docker-compose:
 docker-compose up --build
 ```
 
-### Disabling Cache
-
-Set `REDIS_ENABLED=false` in environment variables to disable caching.
-
-## Limitations
-
-1. **Website Accuracy**: May not always find the correct official website for smaller hotels
-2. **Room Data Availability**: Not all hotel websites list room counts
-3. **Rate Limiting**: External APIs (search, scraping) have rate limits
-4. **Processing Time**: Each lookup takes 10-30 seconds due to multiple web requests and AI calls
-
 ## Playwright (JavaScript Rendering)
 
 The API uses Playwright to handle JavaScript-heavy websites (SPAs, React, Vue, Angular sites) that don't render content with standard HTTP requests.
@@ -302,35 +383,15 @@ The API uses Playwright to handle JavaScript-heavy websites (SPAs, React, Vue, A
 3. Automatically falls back to Playwright (headless Chromium)
 4. Returns whichever method produces more content
 
-### Features
-- **Automatic detection** of JS-heavy sites
-- **Cookie consent handling** - dismisses common consent popups
-- **Resource blocking** - blocks images/ads for faster loading
-- **Smart fallback** - only uses browser when needed
+## Cost Estimation
 
-### Docker Image Size
-The Docker image includes Chromium browser (~400MB added). To disable Playwright:
-- Remove `playwright>=1.40.0` from requirements.txt
-- Remove Playwright-related lines from Dockerfile
+**Azure OpenAI (GPT-4):**
+- ~$0.001 - $0.005 per hotel lookup
+- For 10,000 hotels: ~$10-50
 
-## Error Handling
-
-The API handles errors gracefully and returns appropriate status codes:
-
-| Status | Meaning |
-|--------|---------|
-| `success` | All requested information found with high confidence |
-| `partial` | Some information found (e.g., website found but no room count) |
-| `not_found` | Could not find the hotel or its website |
-| `error` | An error occurred during processing |
-
-## Improvements for Production
-
-1. ~~**Add Redis caching** to avoid re-scraping recent lookups~~ ✅ Implemented
-2. ~~**Add Playwright/Selenium** for JavaScript-rendered sites~~ ✅ Implemented
-3. **Add retry queues** for failed lookups
-4. **Add webhook support** for async batch processing
-5. **Add authentication** (API keys, OAuth)
+**Azure AI Foundry (Bing Grounding Agent):**
+- Bing Search API pricing applies (based on your Bing Search resource tier)
+- Agent API calls use the deployed model's token pricing
 
 ## Project Structure
 
@@ -344,51 +405,38 @@ HotelTVLicensing/
 │   ├── bing_grounding_service.py  # Bing Grounding agent (primary search)
 │   ├── cache_service.py    # Redis caching service
 │   ├── playwright_service.py # Playwright for JS-rendered sites
-│   ├── web_search.py       # Fallback: SerpAPI/DuckDuckGo search
 │   ├── web_scraper.py      # Scraping & pre-extraction
 │   ├── ai_extractor.py     # AI verification & extraction (Azure OpenAI)
+│   ├── planning_portal.py  # Planning portal fallback
 │   └── hotel_lookup.py     # Orchestrates the full workflow
+├── infra/
+│   ├── main.bicep          # Azure infrastructure (Bicep)
+│   └── main.parameters.json
+├── deploy.ps1              # Deployment script
 ├── Dockerfile              # Container definition
 ├── docker-compose.yml      # Container orchestration
 ├── requirements.txt        # Python dependencies
-├── test_api.py             # Test script
-└── .env                    # Environment variables (API keys)
+├── FOUNDRY_SETUP.md        # Azure AI Foundry setup guide
+├── .env.example            # Environment variable template
+└── README.md               # This file
 ```
 
-## Example: Full Lookup
+## Limitations
 
-**Input:**
-```json
-{
-    "name": "The Grand Hotel Brighton",
-    "city": "Brighton"
-}
-```
+1. **Website Accuracy**: May not always find the correct official website for smaller hotels
+2. **Room Data Availability**: Not all hotel websites list room counts
+3. **Rate Limiting**: External APIs (Bing Grounding, scraping) have rate limits
+4. **Processing Time**: Each lookup takes 5-15 seconds; batch processing uses parallel execution
+5. **Model Constraint**: Only `gpt-4.1-mini` works reliably with Bing Grounding tools
 
-**Workflow Log:**
-```
-1. SEARCH    → Bing Grounding Agent: "The Grand Hotel Brighton"
-             → Found website, phone, rooms via Bing search
-2. VALIDATE  → Official website confirmed: https://www.grandbrighton.co.uk
-3. SCRAPE    → Deep-scraped 3 pages for additional data
-4. EXTRACT   → Pre-extracted: 2 phone candidates, 3 room mentions
-5. AI VERIFY → GPT confirmed: Website matches "The Grand Hotel Brighton"
-6. AI EXTRACT→ GPT analyzed content, confidence: 0.85
-```
+## Improvements for Production
 
-**Output:**
-```json
-{
-  "official_website": "https://www.grandbrighton.co.uk",
-  "uk_contact_phone": "+44 1273 224300",
-  "rooms_min": 201,
-  "rooms_max": 201,
-  "rooms_source_notes": "Found on About page: '201 luxurious bedrooms'",
-  "website_source_url": "Google Hotels",
-  "status": "success",
-  "confidence_score": 0.85
-}
-```
+1. ~~**Add Redis caching** to avoid re-scraping recent lookups~~ Done
+2. ~~**Add Playwright/Selenium** for JavaScript-rendered sites~~ Done
+3. **Add retry queues** for failed lookups
+4. **Add webhook support** for async batch processing
+5. **Add authentication** (API keys, OAuth)
+6. **Add managed identity** for Container App to access AI Foundry without API keys
 
 ## License
 

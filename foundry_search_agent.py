@@ -4,7 +4,7 @@ Azure AI Foundry - HotelTVSearch Agent Setup
 Creates the HotelTVSearch agent in Azure AI Foundry that uses Bing Grounding
 to search for hotel information (official websites, phone numbers, room counts).
 
-This agent replaces the SerpAPI-based search approach with Bing Grounding,
+This agent uses Bing Grounding,
 providing a more integrated Azure-native solution.
 
 Prerequisites:
@@ -71,7 +71,7 @@ def main():
     """Create and test the HotelTVSearch agent"""
     print("=" * 60)
     print("Azure AI Foundry - HotelTVSearch Agent Setup")
-    print("(Bing Grounding - replaces SerpAPI)")
+    print("(Bing Grounding)")
     print("=" * 60)
 
     print(f"\nProject Endpoint: {PROJECT_ENDPOINT}")
@@ -113,7 +113,7 @@ def main():
         agent = client.agents.create_agent(
             model=MODEL_DEPLOYMENT,
             name="HotelTVSearch",
-            description="Searches for hotel information (website, phone, rooms) using Bing grounding. Replaces SerpAPI-based search.",
+            description="Searches for hotel information (website, phone, rooms) using Bing grounding.",
             instructions=AGENT_INSTRUCTIONS,
             tools=bing_tool.definitions,
         )
@@ -195,7 +195,7 @@ def main():
         print("NEXT STEPS:")
         print("=" * 60)
         print(f"""
-The HotelTVSearch agent uses Bing Grounding instead of SerpAPI.
+The HotelTVSearch agent uses Bing Grounding for web search.
 
 To use it in the API:
 1. Set these environment variables:
@@ -204,13 +204,9 @@ To use it in the API:
    AZURE_AI_MODEL_DEPLOYMENT_NAME={MODEL_DEPLOYMENT}
 
 2. The API will automatically use Bing grounding for hotel searches
-   instead of SerpAPI/DuckDuckGo
 
-3. SerpAPI key is no longer required (can be removed)
-
-Architecture change:
-  OLD: SerpAPI → Google Hotels → Web Scrape → AI Extract
-  NEW: Bing Grounding Agent → Web Scrape (optional) → AI Extract
+Architecture:
+  Bing Grounding Agent → Web Scrape (optional) → AI Extract
 """)
 
     except Exception as e:

@@ -89,6 +89,49 @@ class BatchResponse(BaseModel):
     results: List[HotelInfoResponse]
 
 
+class RetryItemResponse(BaseModel):
+    """A single retry queue item"""
+    id: str
+    hotel_name: str
+    address: Optional[str] = None
+    city: Optional[str] = None
+    postcode: Optional[str] = None
+    original_errors: List[str] = Field(default_factory=list)
+    original_status: str = "not_found"
+    source_batch_id: Optional[str] = None
+    status: str = "pending"
+    attempt_count: int = 0
+    max_attempts: int = 3
+    created_at: str
+    last_attempt_at: Optional[str] = None
+    next_retry_at: Optional[str] = None
+    last_errors: List[str] = Field(default_factory=list)
+    result: Optional[dict] = None
+
+
+class RetryQueueStatsResponse(BaseModel):
+    """Retry queue statistics"""
+    queue_size: int
+    pending: int
+    retrying: int
+    history_size: int
+    total_succeeded: int
+    total_exhausted: int
+    storage: str
+    max_attempts: int
+    backoff_base_seconds: float
+    is_processing: bool
+
+
+class RetryAllResponse(BaseModel):
+    """Response from processing all pending retries"""
+    processed: int
+    succeeded: int
+    still_failed: int
+    exhausted: int
+    error: Optional[str] = None
+
+
 class HealthResponse(BaseModel):
     """Health check response"""
     status: str
@@ -96,3 +139,4 @@ class HealthResponse(BaseModel):
     ai_provider: str
     ai_configured: bool
     search_provider: str = "Unknown"
+    retry_queue: Optional[str] = None

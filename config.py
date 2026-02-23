@@ -36,6 +36,12 @@ AI_RETRY_DELAY_BASE = float(os.getenv("AI_RETRY_DELAY_BASE", "2.0"))
 # Batch processing
 BATCH_MAX_CONCURRENT = int(os.getenv("BATCH_MAX_CONCURRENT", "25"))
 BATCH_MAX_SIZE = int(os.getenv("BATCH_MAX_SIZE", "500"))
+
+# Retry queue
+RETRY_MAX_ATTEMPTS = int(os.getenv("RETRY_MAX_ATTEMPTS", "3"))
+RETRY_BACKOFF_BASE = float(os.getenv("RETRY_BACKOFF_BASE", "30.0"))
+RETRY_MAX_CONCURRENT = int(os.getenv("RETRY_MAX_CONCURRENT", "5"))
+RETRY_AUTO_ENQUEUE = os.getenv("RETRY_AUTO_ENQUEUE", "true").lower() == "true"
 BING_MAX_CONCURRENT = int(os.getenv("BING_MAX_CONCURRENT", "15"))
 BING_THREAD_POOL_SIZE = int(os.getenv("BING_THREAD_POOL_SIZE", "20"))
 BING_RETRY_MAX = int(os.getenv("BING_RETRY_MAX", "3"))

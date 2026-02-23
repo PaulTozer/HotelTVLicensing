@@ -311,6 +311,43 @@ POST /api/v1/hotel/batch?fast=true
 - 100 hotels (fast mode): ~1-2 minutes
 - 500 hotels (fast mode): ~5-10 minutes
 
+### Retry Queue
+
+Failed batch lookups (status `not_found` or `error`) are automatically enqueued for retry when `RETRY_AUTO_ENQUEUE=true`.
+
+```bash
+# Queue stats
+GET /api/v1/retry/stats
+
+# List pending items
+GET /api/v1/retry/pending
+
+# View retry history (succeeded + exhausted)
+GET /api/v1/retry/history
+
+# Manually enqueue a hotel
+POST /api/v1/retry/enqueue
+{
+    "name": "Some Hotel",
+    "city": "London"
+}
+
+# Retry all pending items
+POST /api/v1/retry/process-all
+
+# Retry a single item
+POST /api/v1/retry/{item_id}
+
+# Remove a specific item
+DELETE /api/v1/retry/{item_id}
+
+# Clear pending queue / history
+DELETE /api/v1/retry/clear/pending
+DELETE /api/v1/retry/clear/history
+```
+
+Items are retried with exponential backoff (`RETRY_BACKOFF_BASE × 2^attempt`). After `RETRY_MAX_ATTEMPTS` failures, items move to **exhausted** status in history. When Redis is available, the queue persists across restarts; otherwise it uses in-memory storage.
+
 ## Response Fields
 
 | Field | Description |
@@ -338,6 +375,10 @@ POST /api/v1/hotel/batch?fast=true
 | `AZURE_AI_MODEL_DEPLOYMENT_NAME` | Model for Bing grounding agent | `gpt-4.1-mini` |
 | `BING_CONNECTION_NAME` | Bing connection name in AI Foundry | - |
 | `USE_BING_GROUNDING` | Enable/disable Bing grounding | `true` |
+| `RETRY_MAX_ATTEMPTS` | Max retry attempts per failed hotel | `3` |
+| `RETRY_BACKOFF_BASE` | Base backoff delay in seconds (exponential) | `30.0` |
+| `RETRY_MAX_CONCURRENT` | Max concurrent retries | `5` |
+| `RETRY_AUTO_ENQUEUE` | Auto-enqueue batch failures | `true` |
 | `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
 | `REDIS_ENABLED` | Enable/disable Redis caching | `true` |
 | `CACHE_TTL_HOURS` | Cache time-to-live in hours | `24` |
@@ -408,6 +449,7 @@ HotelTVLicensing/
 │   ├── __init__.py
 │   ├── bing_grounding_service.py  # Bing Grounding agent (primary search)
 │   ├── cache_service.py    # Redis caching service
+│   ├── retry_queue_service.py # Retry queue for failed lookups
 │   ├── playwright_service.py # Playwright for JS-rendered sites
 │   ├── web_scraper.py      # Scraping & pre-extraction
 │   ├── ai_extractor.py     # AI verification & extraction (Azure OpenAI)
@@ -437,7 +479,7 @@ HotelTVLicensing/
 
 1. ~~**Add Redis caching** to avoid re-scraping recent lookups~~ Done
 2. ~~**Add Playwright/Selenium** for JavaScript-rendered sites~~ Done
-3. **Add retry queues** for failed lookups
+3. ~~**Add retry queues** for failed lookups~~ Done
 4. **Add webhook support** for async batch processing
 5. **Add authentication** (API keys, OAuth)
 6. **Add managed identity** for Container App to access AI Foundry without API keys

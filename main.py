@@ -13,18 +13,22 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from config import LOG_LEVEL, REDIS_URL, REDIS_ENABLED, USE_BING_GROUNDING, BATCH_MAX_CONCURRENT, BATCH_MAX_SIZE
+from config import LOG_LEVEL, REDIS_URL, REDIS_ENABLED, USE_BING_GROUNDING, BATCH_MAX_CONCURRENT, BATCH_MAX_SIZE, RETRY_MAX_ATTEMPTS, RETRY_BACKOFF_BASE, RETRY_MAX_CONCURRENT, RETRY_AUTO_ENQUEUE
 from models import (
     HotelSearchRequest, 
     HotelInfoResponse, 
     HotelBatchRequest,
     BatchResponse,
     HealthResponse,
-    StatusEnum
+    StatusEnum,
+    RetryItemResponse,
+    RetryQueueStatsResponse,
+    RetryAllResponse,
 )
 from services import HotelLookupService, AIExtractorService
 from services.cache_service import CacheService
 from services.bing_grounding_service import BingGroundingService
+from services.retry_queue_service import RetryQueueService
 
 # Configure logging
 logging.basicConfig(
@@ -38,12 +42,13 @@ lookup_service: HotelLookupService = None
 ai_service: AIExtractorService = None
 cache_service: CacheService = None
 bing_service: BingGroundingService = None
+retry_queue: RetryQueueService = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    global lookup_service, ai_service, cache_service, bing_service
+    global lookup_service, ai_service, cache_service, bing_service, retry_queue
     
     logger.info("Starting Hotel Information API...")
     
@@ -90,6 +95,16 @@ async def lifespan(app: FastAPI):
         logger.info(f"AI Provider: {ai_service.get_provider_name()}")
     else:
         logger.warning("No AI provider configured! Set Azure OpenAI credentials.")
+    
+    # Initialize retry queue (uses Redis if available)
+    redis_client = cache_service._client if cache_service and cache_service.is_connected else None
+    retry_queue = RetryQueueService(
+        redis_client=redis_client,
+        max_attempts=RETRY_MAX_ATTEMPTS,
+        backoff_base=RETRY_BACKOFF_BASE,
+    )
+    storage = "Redis" if retry_queue.uses_redis else "in-memory"
+    logger.info(f"Retry queue enabled (storage: {storage}, max attempts: {RETRY_MAX_ATTEMPTS}, auto-enqueue: {RETRY_AUTO_ENQUEUE})")
     
     yield
     
@@ -151,12 +166,16 @@ app.add_middleware(
 async def health_check():
     """Check API health and configuration status"""
     search_provider = "Bing Grounding" if bing_service else "Not configured"
+    retry_storage = None
+    if retry_queue:
+        retry_storage = "Redis" if retry_queue.uses_redis else "in-memory"
     return HealthResponse(
         status="healthy",
-        version="2.1.0",
+        version="2.2.0",
         ai_provider=ai_service.get_provider_name() if ai_service else "None",
         ai_configured=ai_service.is_configured if ai_service else False,
         search_provider=search_provider,
+        retry_queue=retry_storage,
     )
 
 
@@ -272,6 +291,18 @@ async def lookup_batch(
         partial = sum(1 for r in results if r.status == StatusEnum.PARTIAL)
         failed = sum(1 for r in results if r.status in [StatusEnum.NOT_FOUND, StatusEnum.ERROR])
         
+        # Auto-enqueue failures to retry queue
+        if RETRY_AUTO_ENQUEUE and retry_queue and failed > 0:
+            import uuid
+            batch_id = str(uuid.uuid4())[:8]
+            enqueued = await retry_queue.enqueue_batch_failures(
+                results=results,
+                requests=request.hotels,
+                batch_id=batch_id,
+            )
+            if enqueued:
+                logger.info(f"Auto-enqueued {len(enqueued)} failures to retry queue (batch {batch_id})")
+        
         return BatchResponse(
             total_requested=len(request.hotels),
             successful=successful,
@@ -283,6 +314,120 @@ async def lookup_batch(
     except Exception as e:
         logger.error(f"Batch lookup failed: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Retry Queue Endpoints ─────────────────────────────────
+
+
+@app.get("/api/v1/retry/stats", response_model=RetryQueueStatsResponse, tags=["Retry Queue"])
+async def retry_queue_stats():
+    """Get retry queue statistics."""
+    if not retry_queue:
+        raise HTTPException(status_code=503, detail="Retry queue not initialized")
+    stats = await retry_queue.get_stats()
+    return RetryQueueStatsResponse(**stats)
+
+
+@app.get("/api/v1/retry/pending", response_model=List[RetryItemResponse], tags=["Retry Queue"])
+async def retry_queue_pending():
+    """Get all pending retry items."""
+    if not retry_queue:
+        raise HTTPException(status_code=503, detail="Retry queue not initialized")
+    items = await retry_queue.get_pending()
+    return [RetryItemResponse(**item.to_dict()) for item in items]
+
+
+@app.get("/api/v1/retry/all", response_model=List[RetryItemResponse], tags=["Retry Queue"])
+async def retry_queue_all():
+    """Get all items in the retry queue (pending + retrying)."""
+    if not retry_queue:
+        raise HTTPException(status_code=503, detail="Retry queue not initialized")
+    items = await retry_queue.get_all()
+    return [RetryItemResponse(**item.to_dict()) for item in items]
+
+
+@app.get("/api/v1/retry/history", tags=["Retry Queue"])
+async def retry_queue_history():
+    """Get retry history (completed/exhausted items)."""
+    if not retry_queue:
+        raise HTTPException(status_code=503, detail="Retry queue not initialized")
+    return await retry_queue.get_history()
+
+
+@app.post("/api/v1/retry/enqueue", response_model=RetryItemResponse, tags=["Retry Queue"])
+async def retry_enqueue(request: HotelSearchRequest):
+    """Manually add a hotel to the retry queue."""
+    if not retry_queue:
+        raise HTTPException(status_code=503, detail="Retry queue not initialized")
+
+    item = await retry_queue.enqueue(
+        hotel_name=request.name,
+        address=request.address,
+        city=request.city,
+        postcode=request.postcode,
+        original_status="manual",
+    )
+    return RetryItemResponse(**item.to_dict())
+
+
+@app.post("/api/v1/retry/process-all", response_model=RetryAllResponse, tags=["Retry Queue"])
+async def retry_process_all():
+    """
+    Process all pending retry items.
+
+    Retries are run concurrently (default: 5 at a time) with full lookup
+    (including deep scraping). Items that still fail are re-queued with
+    exponential backoff until max attempts is reached.
+    """
+    if not retry_queue or not lookup_service:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    result = await retry_queue.retry_all_pending(
+        lookup_service, max_concurrent=RETRY_MAX_CONCURRENT
+    )
+    return RetryAllResponse(**result)
+
+
+@app.post("/api/v1/retry/{item_id}", tags=["Retry Queue"])
+async def retry_single_item(item_id: str):
+    """Retry a single item by its ID."""
+    if not retry_queue or not lookup_service:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+
+    result = await retry_queue.retry_one(item_id, lookup_service)
+    if result is None:
+        raise HTTPException(status_code=404, detail=f"Retry item '{item_id}' not found")
+    return result
+
+
+@app.delete("/api/v1/retry/clear/pending", tags=["Retry Queue"])
+async def retry_clear_pending():
+    """Clear all pending items from the retry queue."""
+    if not retry_queue:
+        raise HTTPException(status_code=503, detail="Retry queue not initialized")
+    count = await retry_queue.clear_queue()
+    return {"cleared": count}
+
+
+@app.delete("/api/v1/retry/clear/history", tags=["Retry Queue"])
+async def retry_clear_history():
+    """Clear the retry history."""
+    if not retry_queue:
+        raise HTTPException(status_code=503, detail="Retry queue not initialized")
+    count = await retry_queue.clear_history()
+    return {"cleared": count}
+
+
+@app.delete("/api/v1/retry/{item_id}", tags=["Retry Queue"])
+async def retry_remove_item(item_id: str):
+    """Remove an item from the retry queue."""
+    if not retry_queue:
+        raise HTTPException(status_code=503, detail="Retry queue not initialized")
+
+    removed = await retry_queue.remove_item(item_id)
+    if not removed:
+        raise HTTPException(status_code=404, detail=f"Retry item '{item_id}' not found")
+    return {"removed": True, "item_id": item_id}
 
 
 @app.get("/api/v1/hotel/example", response_model=HotelInfoResponse, tags=["Examples"])

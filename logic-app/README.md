@@ -146,7 +146,7 @@ For better performance, modify the Logic App to use the batch endpoint:
 ```json
 {
   "method": "POST",
-  "uri": "https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io/api/v1/hotel/batch",
+  "uri": "https://<your-app-name>.<unique-id>.swedencentral.azurecontainerapps.io/api/v1/hotel/batch",
   "body": {
     "hotels": [
       {"name": "Hotel 1", "address": "Address 1"},

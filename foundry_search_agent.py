@@ -17,6 +17,7 @@ Usage:
 """
 
 import os
+import sys
 import json
 from dotenv import load_dotenv
 from azure.identity import DefaultAzureCredential
@@ -26,12 +27,17 @@ from azure.ai.agents.models import BingGroundingTool
 load_dotenv()
 
 # Configuration
-PROJECT_ENDPOINT = os.getenv(
-    "AZURE_AI_PROJECT_ENDPOINT",
-    "https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/api/projects/firstproject",
-)
+PROJECT_ENDPOINT = os.getenv("AZURE_AI_PROJECT_ENDPOINT")
+if not PROJECT_ENDPOINT:
+    print("ERROR: Set AZURE_AI_PROJECT_ENDPOINT in your .env file")
+    print("Example: https://your-foundry.services.ai.azure.com/api/projects/yourproject")
+    sys.exit(1)
 MODEL_DEPLOYMENT = os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "gpt-4.1-mini")
-BING_CONNECTION_NAME = os.getenv("BING_CONNECTION_NAME", "PTGroundingBingSearchectup5")
+BING_CONNECTION_NAME = os.getenv("BING_CONNECTION_NAME")
+if not BING_CONNECTION_NAME:
+    print("ERROR: Set BING_CONNECTION_NAME in your .env file")
+    print("This is the name of the Bing Search connection in your AI Foundry project")
+    sys.exit(1)
 
 # Agent instructions for HotelTVSearch
 AGENT_INSTRUCTIONS = """You are a hotel information research assistant called HotelTVSearch. 

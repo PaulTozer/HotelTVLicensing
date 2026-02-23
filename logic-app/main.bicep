@@ -8,7 +8,7 @@ param location string = resourceGroup().location
 param logicAppName string = 'hotel-licensing-processor'
 
 @description('Hotel API URL')
-param hotelApiUrl string = 'https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io'
+param hotelApiUrl string // Required: Your deployed Container App URL (e.g., 'https://hotelapi-app.<unique-id>.swedencentral.azurecontainerapps.io')
 
 // Office 365 connection for Excel
 resource office365Connection 'Microsoft.Web/connections@2016-06-01' = {

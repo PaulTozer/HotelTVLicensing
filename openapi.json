@@ -7,8 +7,8 @@
   },
   "servers": [
     {
-      "url": "https://hotelapi-app.orangeflower-3dda66b0.swedencentral.azurecontainerapps.io",
-      "description": "Production server"
+      "url": "https://<your-app-name>.<unique-id>.swedencentral.azurecontainerapps.io",
+      "description": "Production server (replace with your deployed Container App URL)"
     }
   ],
   "paths": {

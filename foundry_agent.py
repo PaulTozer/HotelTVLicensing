@@ -12,6 +12,7 @@ Prerequisites:
 """
 
 import os
+import sys
 import json
 from dotenv import load_dotenv
 from azure.identity import DefaultAzureCredential
@@ -20,8 +21,12 @@ from azure.ai.projects import AIProjectClient
 load_dotenv()
 
 # Configuration
-PROJECT_ENDPOINT = os.getenv("AZURE_AI_PROJECT_ENDPOINT", "https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/api/projects/firstproject")
-MODEL_DEPLOYMENT = os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "gpt-5.2-chat")
+PROJECT_ENDPOINT = os.getenv("AZURE_AI_PROJECT_ENDPOINT")
+if not PROJECT_ENDPOINT:
+    print("ERROR: Set AZURE_AI_PROJECT_ENDPOINT in your .env file")
+    print("Example: https://your-foundry.services.ai.azure.com/api/projects/yourproject")
+    sys.exit(1)
+MODEL_DEPLOYMENT = os.getenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "gpt-4")
 
 # Load OpenAPI spec
 def load_openapi_spec():
@@ -126,7 +131,7 @@ def main():
         print("NEXT STEPS:")
         print("=" * 60)
         print("""
-1. Go to https://ai.azure.com and open your 'firstproject'
+1. Go to https://ai.azure.com and open your project
 2. Navigate to Agents in the left sidebar
 3. You should see 'HotelTVLicensingAgent' listed
 4. Click on it to open the playground
@@ -156,7 +161,7 @@ MANUAL SETUP INSTRUCTIONS FOR AZURE AI FOUNDRY PORTAL
    https://ai.azure.com
    
 2. OPEN YOUR PROJECT:
-   - Select 'firstproject' from your projects
+   - Select your project from the projects list
 
 3. CREATE A NEW AGENT:
    - Click on "Agents" in the left sidebar (or "Build" > "Agents")

@@ -1,7 +1,8 @@
 """Main hotel lookup orchestration service"""
 
 import logging
-from typing import Optional, List
+import time
+from typing import Optional, List, Callable, Awaitable
 from datetime import datetime
 
 from models import HotelSearchRequest, HotelInfoResponse, StatusEnum
@@ -11,6 +12,7 @@ from .ai_extractor import AIExtractorService
 from .planning_portal import PlanningPortalService
 from .cache_service import CacheService
 from .bing_grounding_service import BingGroundingService
+from config import BATCH_MAX_CONCURRENT
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +29,7 @@ class HotelLookupService:
         self.planning_service = PlanningPortalService()
         self.cache_service = cache_service
     
-    async def lookup_hotel(self, request: HotelSearchRequest, use_cache: bool = True) -> HotelInfoResponse:
+    async def lookup_hotel(self, request: HotelSearchRequest, use_cache: bool = True, skip_deep_scrape: bool = False) -> HotelInfoResponse:
         """
         Perform a complete hotel information lookup
         
@@ -38,6 +40,7 @@ class HotelLookupService:
         4. Use AI to extract structured information
         5. Cache and return consolidated results
         """
+
         address_str = self._build_address(request)
         
         # Step 0: Check cache first
@@ -99,9 +102,11 @@ class HotelLookupService:
 
                 # If we got a website, optionally do deep scraping for more data
                 website_url = bing_result.get("official_website")
-                if website_url and (not response.rooms_min or not response.uk_contact_phone):
+                if not skip_deep_scrape and website_url and (not response.rooms_min or not response.uk_contact_phone):
                     logger.info(f"Bing found website {website_url}, deep scraping for missing data...")
                     await self._deep_scrape_and_extract(request, response, website_url)
+                elif skip_deep_scrape and (not response.rooms_min or not response.uk_contact_phone):
+                    logger.info(f"Skipping deep scrape for {request.name} (fast mode)")
                 
                 # Determine status
                 if response.rooms_min and response.uk_contact_phone and response.official_website:
@@ -118,6 +123,13 @@ class HotelLookupService:
                 return response
 
             # Step 1b: Fallback to web search (SerpAPI/DuckDuckGo) if Bing grounding unavailable or failed
+            # In fast mode, skip entire fallback — Bing-only for maximum speed
+            if skip_deep_scrape:
+                logger.info(f"Skipping fallback for {request.name} (fast mode, Bing returned no results)")
+                response.status = StatusEnum.NOT_FOUND
+                response.errors.append("Fast mode: Bing Grounding returned no results, skipped fallback")
+                return response
+
             logger.info(f"Falling back to web search for: {request.name}")
             search_results = self.search_service.search_hotel_website(
                 name=request.name,
@@ -299,39 +311,81 @@ class HotelLookupService:
         except Exception as e:
             logger.warning(f"Failed to cache result for {hotel_name}: {e}")
     
-    async def lookup_batch(self, requests: List[HotelSearchRequest], delay_seconds: float = 1.5, max_concurrent: int = 5) -> List[HotelInfoResponse]:
+    async def lookup_batch(
+        self,
+        requests: List[HotelSearchRequest],
+        delay_seconds: float = 0.0,
+        max_concurrent: int = None,
+        progress_callback: Optional[Callable] = None,
+        skip_deep_scrape: bool = False,
+    ) -> List[HotelInfoResponse]:
         """
-        Process multiple hotel lookups with controlled parallelism.
+        Process multiple hotel lookups with high-throughput parallelism.
+        
+        Concurrency is primarily controlled by the BingGroundingService semaphore.
+        An additional semaphore here limits overall resource usage for the full
+        lookup pipeline (scraping, AI extraction, etc.).
         
         Args:
             requests: List of hotel search requests
-            delay_seconds: Delay between starting each batch of concurrent requests
-            max_concurrent: Maximum number of hotels to process in parallel (default 5)
+            delay_seconds: Optional delay between starts (0 = no delay, semaphore controls flow)
+            max_concurrent: Max concurrent full lookups (default from config)
+            progress_callback: Optional async callable(completed, total, hotel_name, status)
+            skip_deep_scrape: If True, skip deep scraping for faster results (Bing-only)
         """
         import asyncio
         
-        results = [None] * len(requests)  # Pre-allocate to maintain order
+        max_concurrent = max_concurrent or BATCH_MAX_CONCURRENT
+        total = len(requests)
+        results = [None] * total
+        completed = 0
         semaphore = asyncio.Semaphore(max_concurrent)
+        start_time = time.time()
         
-        async def process_with_semaphore(index: int, request: HotelSearchRequest):
+        logger.info(
+            f"Starting batch lookup: {total} hotels, max {max_concurrent} concurrent"
+            f"{', fast mode (no deep scrape)' if skip_deep_scrape else ''}"
+        )
+        
+        async def process_one(index: int, request: HotelSearchRequest):
+            nonlocal completed
             async with semaphore:
-                logger.info(f"Starting lookup {index+1}/{len(requests)}: {request.name}")
-                result = await self.lookup_hotel(request)
-                results[index] = result
-                # Small delay after completing to spread out API calls
-                await asyncio.sleep(delay_seconds)
-                return result
+                try:
+                    logger.info(f"[{index+1}/{total}] Starting: {request.name}")
+                    result = await self.lookup_hotel(request, skip_deep_scrape=skip_deep_scrape)
+                    results[index] = result
+                except Exception as e:
+                    logger.error(f"[{index+1}/{total}] Failed: {request.name}: {e}")
+                    results[index] = HotelInfoResponse(
+                        search_name=request.name,
+                        search_address=self._build_address(request),
+                        status=StatusEnum.ERROR,
+                        errors=[str(e)]
+                    )
+                finally:
+                    completed += 1
+                    elapsed = time.time() - start_time
+                    rate = completed / elapsed if elapsed > 0 else 0
+                    
+                    status = results[index].status.value if results[index] else "error"
+                    
+                    if completed % 10 == 0 or completed == total:
+                        logger.info(
+                            f"Batch progress: {completed}/{total} "
+                            f"({rate:.1f}/sec, elapsed {elapsed:.0f}s)"
+                        )
+                    
+                    if progress_callback:
+                        try:
+                            await progress_callback(completed, total, request.name, status)
+                        except Exception:
+                            pass
         
-        # Create tasks for all requests
-        tasks = [
-            process_with_semaphore(i, req) 
-            for i, req in enumerate(requests)
-        ]
-        
-        # Run all tasks concurrently (semaphore limits actual parallelism)
+        # Launch all tasks — semaphore controls actual concurrency
+        tasks = [process_one(i, req) for i, req in enumerate(requests)]
         await asyncio.gather(*tasks, return_exceptions=True)
         
-        # Handle any None results (from exceptions)
+        # Handle any None results
         for i, result in enumerate(results):
             if result is None:
                 results[i] = HotelInfoResponse(
@@ -341,9 +395,16 @@ class HotelLookupService:
                     errors=["Lookup failed unexpectedly"]
                 )
         
+        elapsed = time.time() - start_time
         successful = sum(1 for r in results if r.status == StatusEnum.SUCCESS)
         partial = sum(1 for r in results if r.status == StatusEnum.PARTIAL)
-        logger.info(f"Batch complete: {successful} success, {partial} partial, {len(results)-successful-partial} failed")
+        failed = total - successful - partial
+        rate = total / elapsed if elapsed > 0 else 0
+        
+        logger.info(
+            f"Batch complete: {total} hotels in {elapsed:.1f}s ({rate:.1f}/sec) "
+            f"| {successful} success, {partial} partial, {failed} failed"
+        )
         
         return results
     

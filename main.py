@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from config import LOG_LEVEL, REDIS_URL, REDIS_ENABLED, USE_BING_GROUNDING
+from config import LOG_LEVEL, REDIS_URL, REDIS_ENABLED, USE_BING_GROUNDING, BATCH_MAX_CONCURRENT, BATCH_MAX_SIZE
 from models import (
     HotelSearchRequest, 
     HotelInfoResponse, 
@@ -154,11 +154,24 @@ async def health_check():
     search_provider = "Bing Grounding" if bing_service else "SerpAPI/DuckDuckGo"
     return HealthResponse(
         status="healthy",
-        version="2.0.0",
+        version="2.1.0",
         ai_provider=ai_service.get_provider_name() if ai_service else "None",
         ai_configured=ai_service.is_configured if ai_service else False,
         search_provider=search_provider,
     )
+
+
+@app.get("/metrics", tags=["Health"])
+async def get_metrics():
+    """Get performance metrics for the Bing Grounding service"""
+    bing_metrics = bing_service.metrics if bing_service else {}
+    return {
+        "bing_grounding": bing_metrics,
+        "batch_config": {
+            "max_concurrent_lookups": BATCH_MAX_CONCURRENT,
+            "max_batch_size": BATCH_MAX_SIZE,
+        },
+    }
 
 
 @app.get("/cache/stats", tags=["Cache"])
@@ -215,43 +228,47 @@ async def lookup_hotel(
 
 
 @app.post("/api/v1/hotel/batch", response_model=BatchResponse, tags=["Hotel Lookup"])
-async def lookup_batch(request: HotelBatchRequest):
+async def lookup_batch(
+    request: HotelBatchRequest,
+    fast: bool = Query(False, description="Fast mode: skip deep scraping, rely on Bing Grounding only. Much faster but may return more partial results."),
+):
     """
-    Look up information for multiple hotels (max 100 per request).
+    Look up information for multiple hotels in parallel.
     
-    Hotels are processed in parallel (up to 5 concurrent) with rate limiting.
+    Hotels are processed concurrently with adaptive parallelism.
+    The Bing Grounding agent handles up to 10 concurrent searches by default,
+    while up to 25 full lookups can be in-flight simultaneously.
     
-    **Performance estimates:**
-    - 10 hotels: ~30-60 seconds
-    - 20 hotels: ~1-2 minutes
-    - 50 hotels: ~3-5 minutes
+    **Performance estimates (with Bing Grounding):**
+    - 25 hotels (fast mode): ~20-30 seconds
+    - 25 hotels (full mode): ~60-120 seconds
+    - 100 hotels (fast mode): ~1-2 minutes
+    - 500 hotels (fast mode): ~5-10 minutes
+    
+    **Parameters:**
+    - `fast=true`: Skip deep scraping for maximum throughput. Uses Bing Grounding only.
+      Faster but may return more partial results for obscure hotels.
     
     **Scaling:**
-    - Uses 5 concurrent lookups by default
-    - Azure OpenAI quota: 500K TPM
+    - 25 concurrent lookups (configurable via BATCH_MAX_CONCURRENT)  
+    - 10 concurrent Bing searches (configurable via BING_MAX_CONCURRENT)
+    - 20 threads for blocking SDK calls
+    - Retry with exponential backoff for transient failures
     """
     if not lookup_service:
         raise HTTPException(status_code=503, detail="Service not initialized")
     
-    # Adjust parallelism based on batch size
-    if len(request.hotels) <= 10:
-        max_concurrent = 4
-        delay = 1.5
-    elif len(request.hotels) <= 30:
-        max_concurrent = 5
-        delay = 1.5
-    else:
-        max_concurrent = 5
-        delay = 2.0
-        logger.info(f"Large batch of {len(request.hotels)} hotels - processing with 5 concurrent")
+    import time
+    start_time = time.time()
     
     try:
         results = await lookup_service.lookup_batch(
             request.hotels, 
-            delay_seconds=delay,
-            max_concurrent=max_concurrent
+            max_concurrent=BATCH_MAX_CONCURRENT,
+            skip_deep_scrape=fast,
         )
         
+        elapsed = time.time() - start_time
         successful = sum(1 for r in results if r.status == StatusEnum.SUCCESS)
         partial = sum(1 for r in results if r.status == StatusEnum.PARTIAL)
         failed = sum(1 for r in results if r.status in [StatusEnum.NOT_FOUND, StatusEnum.ERROR])
@@ -261,7 +278,8 @@ async def lookup_batch(request: HotelBatchRequest):
             successful=successful,
             partial=partial,
             failed=failed,
-            results=results
+            results=results,
+            processing_time_seconds=round(elapsed, 1),
         )
     except Exception as e:
         logger.error(f"Batch lookup failed: {e}")

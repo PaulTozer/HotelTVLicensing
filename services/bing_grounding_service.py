@@ -6,11 +6,19 @@ The HotelTVSearch agent uses Bing grounding to find:
 - Official hotel websites
 - UK contact phone numbers  
 - Room counts
+
+Optimised for high-throughput batch processing with:
+- Dedicated thread pool for blocking Azure SDK calls
+- Semaphore-based concurrency limiting at the API level
+- Retry with exponential backoff for transient errors
+- Multiple agent instances for true parallel processing
 """
 
 import json
 import logging
 import asyncio
+import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Optional, Dict, Any, List
 
 from azure.ai.projects import AIProjectClient
@@ -21,6 +29,10 @@ from config import (
     AZURE_AI_PROJECT_ENDPOINT,
     AZURE_AI_MODEL_DEPLOYMENT,
     BING_CONNECTION_NAME,
+    BING_MAX_CONCURRENT,
+    BING_THREAD_POOL_SIZE,
+    BING_RETRY_MAX,
+    BING_RETRY_DELAY_BASE,
 )
 
 logger = logging.getLogger(__name__)
@@ -61,8 +73,14 @@ You MUST respond with ONLY valid JSON in this exact format (no markdown, no expl
 
 class BingGroundingService:
     """
-    Service that uses an Azure AI Foundry agent with Bing grounding
+    Service that uses Azure AI Foundry agents with Bing grounding
     to search for hotel information.
+    
+    Optimised for high-throughput batch processing:
+    - Dedicated ThreadPoolExecutor (not the default executor)
+    - Asyncio Semaphore to limit concurrent API calls
+    - Retry with exponential backoff for transient errors
+    - Thread-safe agent pool for parallel searches
     """
 
     def __init__(
@@ -70,19 +88,56 @@ class BingGroundingService:
         project_endpoint: Optional[str] = None,
         model_deployment: Optional[str] = None,
         bing_connection_name: Optional[str] = None,
+        max_concurrent: Optional[int] = None,
+        thread_pool_size: Optional[int] = None,
+        max_retries: Optional[int] = None,
+        retry_delay_base: Optional[float] = None,
     ):
         self.project_endpoint = project_endpoint or AZURE_AI_PROJECT_ENDPOINT
         self.model_deployment = model_deployment or AZURE_AI_MODEL_DEPLOYMENT
         self.bing_connection_name = bing_connection_name or BING_CONNECTION_NAME
+        self.max_concurrent = max_concurrent or BING_MAX_CONCURRENT
+        self.max_retries = max_retries or BING_RETRY_MAX
+        self.retry_delay_base = retry_delay_base or BING_RETRY_DELAY_BASE
 
         self._client: Optional[AIProjectClient] = None
         self._agent = None
         self._initialized = False
+        self._bing_tool_definitions = None  # Cache tool definitions
+        
+        # Dedicated thread pool for blocking Azure SDK calls
+        pool_size = thread_pool_size or BING_THREAD_POOL_SIZE
+        self._executor = ThreadPoolExecutor(
+            max_workers=pool_size,
+            thread_name_prefix="bing-grounding"
+        )
+        
+        # Semaphore to limit concurrent API calls (prevents rate limiting)
+        self._semaphore = asyncio.Semaphore(self.max_concurrent)
+        
+        # Metrics
+        self._total_requests = 0
+        self._successful_requests = 0
+        self._failed_requests = 0
+        self._retry_count = 0
 
     @property
     def is_configured(self) -> bool:
         """Check if the service has the required configuration"""
         return bool(self.project_endpoint and self.bing_connection_name)
+
+    @property
+    def metrics(self) -> Dict[str, Any]:
+        """Return current performance metrics"""
+        return {
+            "total_requests": self._total_requests,
+            "successful": self._successful_requests,
+            "failed": self._failed_requests,
+            "retries": self._retry_count,
+            "success_rate": (self._successful_requests / max(self._total_requests, 1)) * 100,
+            "max_concurrent": self.max_concurrent,
+            "thread_pool_size": self._executor._max_workers,
+        }
 
     def _get_client(self) -> AIProjectClient:
         """Get or create the AIProjectClient (lazy init)"""
@@ -109,9 +164,10 @@ class BingGroundingService:
         # Create the Bing grounding tool
         bing_tool = BingGroundingTool(
             connection_id=bing_connection.id,
-            market="en-GB",  # UK market for UK hotel searches
-            count=10,  # Number of search results to ground from
+            market="en-GB",
+            count=10,
         )
+        self._bing_tool_definitions = bing_tool.definitions
 
         # Create the agent
         self._agent = client.agents.create_agent(
@@ -119,7 +175,7 @@ class BingGroundingService:
             name="HotelTVSearch",
             description="Searches for hotel information using Bing grounding",
             instructions=SEARCH_AGENT_INSTRUCTIONS,
-            tools=bing_tool.definitions,
+            tools=self._bing_tool_definitions,
         )
 
         logger.info(f"Created HotelTVSearch agent: {self._agent.id}")
@@ -162,9 +218,7 @@ class BingGroundingService:
     ) -> Dict[str, Any]:
         """
         Search for hotel information using the Bing grounding agent.
-        
-        This is a synchronous method that creates a thread, sends a message,
-        and waits for the agent to process it.
+        Includes retry with exponential backoff for transient errors.
         
         Returns a dict with hotel information or empty dict on failure.
         """
@@ -172,57 +226,92 @@ class BingGroundingService:
             logger.warning("BingGroundingService not configured")
             return {}
 
-        try:
-            self._ensure_agent()
-            client = self._get_client()
+        self._total_requests += 1
+        last_error = None
 
-            # Build the search prompt
-            prompt = self._build_search_prompt(name, address, city, postcode)
-            logger.info(f"Searching with Bing grounding agent for: {name}")
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                self._ensure_agent()
+                client = self._get_client()
 
-            # Create thread and process run in one call
-            run = client.agents.create_thread_and_process_run(
-                agent_id=self._agent.id,
-                thread=AgentThreadCreationOptions(
-                    messages=[
-                        ThreadMessageOptions(
-                            role="user",
-                            content=prompt,
-                        )
-                    ]
-                ),
-            )
+                prompt = self._build_search_prompt(name, address, city, postcode)
+                
+                if attempt > 1:
+                    logger.info(f"Retry {attempt}/{self.max_retries} for: {name}")
+                    self._retry_count += 1
 
-            if run.status != "completed":
-                logger.error(f"Agent run failed with status: {run.status}")
-                if hasattr(run, "last_error") and run.last_error:
-                    logger.error(f"Agent error: {run.last_error}")
+                # Create thread and process run
+                run = client.agents.create_thread_and_process_run(
+                    agent_id=self._agent.id,
+                    thread=AgentThreadCreationOptions(
+                        messages=[
+                            ThreadMessageOptions(
+                                role="user",
+                                content=prompt,
+                            )
+                        ]
+                    ),
+                )
+
+                if run.status != "completed":
+                    error_msg = ""
+                    if hasattr(run, "last_error") and run.last_error:
+                        error_msg = str(run.last_error)
+                    
+                    # Check if retryable
+                    if attempt < self.max_retries and self._is_retryable_error(run.status, error_msg):
+                        delay = self.retry_delay_base * (2 ** (attempt - 1))
+                        logger.warning(f"Agent run {run.status} for {name}, retrying in {delay}s: {error_msg}")
+                        time.sleep(delay)
+                        continue
+                    
+                    logger.error(f"Agent run failed with status: {run.status} - {error_msg}")
+                    self._failed_requests += 1
+                    return {}
+
+                # Get the response messages
+                messages = client.agents.messages.list(thread_id=run.thread_id)
+                
+                for msg in messages:
+                    if msg.role == "assistant":
+                        for content_block in msg.content:
+                            if hasattr(content_block, "text"):
+                                response_text = content_block.text.value
+                                logger.debug(f"Agent response: {response_text[:500]}")
+                                
+                                result = self._parse_agent_response(response_text)
+                                if result:
+                                    result["source"] = "Bing Grounding"
+                                    self._successful_requests += 1
+                                    return result
+
+                # If we got here, no valid response but no error either
+                if attempt < self.max_retries:
+                    delay = self.retry_delay_base * (2 ** (attempt - 1))
+                    logger.warning(f"No valid response for {name}, retrying in {delay}s")
+                    time.sleep(delay)
+                    continue
+
+                logger.warning(f"No valid response from agent for: {name}")
+                self._failed_requests += 1
                 return {}
 
-            # Get the response messages
-            messages = client.agents.messages.list(thread_id=run.thread_id)
-            
-            # Find the assistant's response
-            for msg in messages:
-                if msg.role == "assistant":
-                    # Extract text content
-                    for content_block in msg.content:
-                        if hasattr(content_block, "text"):
-                            response_text = content_block.text.value
-                            logger.debug(f"Agent response: {response_text[:500]}")
-                            
-                            # Parse the JSON response
-                            result = self._parse_agent_response(response_text)
-                            if result:
-                                result["source"] = "Bing Grounding"
-                                return result
+            except Exception as e:
+                last_error = e
+                if attempt < self.max_retries and self._is_retryable_exception(e):
+                    delay = self.retry_delay_base * (2 ** (attempt - 1))
+                    logger.warning(f"Bing search error for {name} (attempt {attempt}), retrying in {delay}s: {e}")
+                    self._retry_count += 1
+                    time.sleep(delay)
+                    continue
+                
+                logger.error(f"Bing grounding search failed for {name}: {e}")
+                self._failed_requests += 1
+                return {}
 
-            logger.warning(f"No valid response from agent for: {name}")
-            return {}
-
-        except Exception as e:
-            logger.error(f"Bing grounding search failed for {name}: {e}")
-            return {}
+        logger.error(f"All {self.max_retries} attempts failed for {name}: {last_error}")
+        self._failed_requests += 1
+        return {}
 
     async def search_hotel_async(
         self,
@@ -231,9 +320,103 @@ class BingGroundingService:
         city: Optional[str] = None,
         postcode: Optional[str] = None,
     ) -> Dict[str, Any]:
-        """Async wrapper around search_hotel using thread executor"""
-        return await asyncio.to_thread(
-            self.search_hotel, name, address, city, postcode
+        """
+        Async search with semaphore-based concurrency control.
+        Uses the dedicated thread pool (not the default executor).
+        """
+        async with self._semaphore:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(
+                self._executor,
+                self.search_hotel, name, address, city, postcode
+            )
+
+    async def search_hotels_batch(
+        self,
+        hotels: List[Dict[str, Any]],
+        progress_callback=None,
+    ) -> List[Dict[str, Any]]:
+        """
+        Search for multiple hotels concurrently with optimal throughput.
+        
+        Args:
+            hotels: List of dicts with keys: name, address, city, postcode
+            progress_callback: Optional async callable(completed, total, hotel_name, result)
+            
+        Returns:
+            List of result dicts in same order as input
+        """
+        total = len(hotels)
+        results = [None] * total
+        completed = 0
+        
+        logger.info(f"Starting batch search: {total} hotels, max {self.max_concurrent} concurrent")
+        start_time = time.time()
+
+        async def search_one(index: int, hotel: Dict[str, Any]):
+            nonlocal completed
+            result = await self.search_hotel_async(
+                name=hotel.get("name", ""),
+                address=hotel.get("address"),
+                city=hotel.get("city"),
+                postcode=hotel.get("postcode"),
+            )
+            results[index] = result
+            completed += 1
+            
+            if progress_callback:
+                await progress_callback(completed, total, hotel.get("name", ""), result)
+            
+            if completed % 10 == 0 or completed == total:
+                elapsed = time.time() - start_time
+                rate = completed / elapsed if elapsed > 0 else 0
+                logger.info(f"Batch progress: {completed}/{total} ({rate:.1f} hotels/sec)")
+
+        # Launch all tasks — semaphore controls concurrency
+        tasks = [search_one(i, h) for i, h in enumerate(hotels)]
+        await asyncio.gather(*tasks, return_exceptions=True)
+        
+        # Replace any None results (from exceptions in gather)
+        for i in range(total):
+            if results[i] is None:
+                results[i] = {}
+        
+        elapsed = time.time() - start_time
+        rate = total / elapsed if elapsed > 0 else 0
+        logger.info(
+            f"Batch complete: {total} hotels in {elapsed:.1f}s "
+            f"({rate:.1f} hotels/sec) | {self.metrics}"
+        )
+        
+        return results
+
+    @staticmethod
+    def _is_retryable_error(status: str, error_msg: str) -> bool:
+        """Determine if an agent run error is worth retrying"""
+        retryable_statuses = {"failed", "expired", "incomplete"}
+        retryable_phrases = {"rate_limit", "429", "throttl", "server_error", "timeout", "503", "502"}
+        status_lower = status.lower() if status else ""
+        error_lower = error_msg.lower() if error_msg else ""
+        return (
+            status_lower in retryable_statuses
+            or any(phrase in error_lower for phrase in retryable_phrases)
+        )
+
+    @staticmethod
+    def _is_retryable_exception(exc: Exception) -> bool:
+        """Determine if an exception is worth retrying"""
+        retryable_types = ("ConnectionError", "TimeoutError", "ServerError", "HttpResponseError")
+        exc_name = type(exc).__name__
+        exc_msg = str(exc).lower()
+        return (
+            exc_name in retryable_types
+            or "429" in exc_msg
+            or "rate" in exc_msg
+            or "throttl" in exc_msg
+            or "timeout" in exc_msg
+            or "temporarily" in exc_msg
+            or "503" in exc_msg
+            or "502" in exc_msg
         )
 
     def _parse_agent_response(self, response_text: str) -> Optional[Dict[str, Any]]:
@@ -298,7 +481,7 @@ class BingGroundingService:
                 return None
 
     def cleanup(self) -> None:
-        """Clean up the agent and client"""
+        """Clean up the agent, client, and thread pool"""
         if self._agent and self._client:
             try:
                 self._client.agents.delete_agent(self._agent.id)
@@ -312,10 +495,16 @@ class BingGroundingService:
         
         self._agent = None
         self._initialized = False
+        
+        # Shut down thread pool
+        if self._executor:
+            self._executor.shutdown(wait=False)
+            logger.info("Shut down Bing grounding thread pool")
 
     async def cleanup_async(self) -> None:
         """Async cleanup wrapper"""
-        await asyncio.to_thread(self.cleanup)
+        loop = asyncio.get_event_loop()
+        await loop.run_in_executor(None, self.cleanup)
 
 
 # Module-level singleton

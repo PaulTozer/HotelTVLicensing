@@ -12,7 +12,7 @@ param azureOpenAiEndpoint string
 param azureOpenAiApiKey string
 
 @description('Azure OpenAI deployment name')
-param azureOpenAiDeployment string = 'gpt-5.2-chat'
+param azureOpenAiDeployment string = 'gpt-4'
 
 @description('Azure AI Foundry project endpoint for Bing Grounding agent')
 param azureAiProjectEndpoint string
@@ -23,11 +23,28 @@ param bingConnectionName string
 @description('Model deployment for Bing Grounding agent (must be gpt-4.1-mini)')
 param azureAiModelDeployment string = 'gpt-4.1-mini'
 
+@description('Whether to create a Bing Search resource (set false if you already have one)')
+param deployBingSearch bool = false
+
+@description('Bing Search pricing tier (S1 = 1000 calls/month, F1 = free 1000 calls/month)')
+param bingSearchSku string = 'S1'
+
 var uniqueSuffix = uniqueString(resourceGroup().id)
 var containerRegistryName = '${baseName}acr${uniqueSuffix}'
 var containerAppEnvName = '${baseName}-env-${uniqueSuffix}'
 var containerAppName = '${baseName}-app'
 var logAnalyticsName = '${baseName}-logs-${uniqueSuffix}'
+var bingSearchName = '${baseName}-bing-${uniqueSuffix}'
+
+// Bing Search Resource (optional - set deployBingSearch=true to create)
+resource bingSearch 'Microsoft.Bing/accounts@2020-06-10' = if (deployBingSearch) {
+  name: bingSearchName
+  location: 'global'
+  kind: 'Bing.Search.v7'
+  sku: {
+    name: bingSearchSku
+  }
+}
 
 // Log Analytics Workspace
 resource logAnalytics 'Microsoft.OperationalInsights/workspaces@2022-10-01' = {
@@ -181,3 +198,4 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
 output containerAppUrl string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
 output containerRegistryLoginServer string = containerRegistry.properties.loginServer
 output containerRegistryName string = containerRegistry.name
+output bingSearchResourceName string = deployBingSearch ? bingSearch.name : 'not-deployed'

@@ -10,6 +10,7 @@ from .web_scraper import WebScraperService
 from .ai_extractor import AIExtractorService
 from .planning_portal import PlanningPortalService
 from .cache_service import CacheService
+from .bing_grounding_service import BingGroundingService
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +18,10 @@ logger = logging.getLogger(__name__)
 class HotelLookupService:
     """Orchestrates the full hotel information lookup process"""
     
-    def __init__(self, cache_service: Optional[CacheService] = None):
-        self.search_service = WebSearchService()
+    def __init__(self, cache_service: Optional[CacheService] = None, 
+                 bing_grounding_service: Optional[BingGroundingService] = None):
+        self.bing_service = bing_grounding_service
+        self.search_service = WebSearchService()  # Fallback only
         self.scraper_service = WebScraperService()
         self.ai_service = AIExtractorService()
         self.planning_service = PlanningPortalService()
@@ -69,8 +72,53 @@ class HotelLookupService:
         )
         
         try:
-            # Step 1: Find the hotel's website
-            logger.info(f"Looking up: {request.name}")
+            # Step 1: Try Bing Grounding Agent first (primary search method)
+            bing_result = None
+            if self.bing_service and self.bing_service.is_configured:
+                logger.info(f"Using Bing Grounding agent for: {request.name}")
+                bing_result = await self.bing_service.search_hotel_async(
+                    name=request.name,
+                    address=request.address,
+                    city=request.city,
+                    postcode=request.postcode,
+                )
+
+            if bing_result:
+                # Bing grounding returned results - apply them directly
+                logger.info(f"Bing Grounding found results for: {request.name}")
+                response.official_website = bing_result.get("official_website")
+                response.uk_contact_phone = bing_result.get("uk_contact_phone")
+                response.rooms_min = bing_result.get("rooms_min")
+                response.rooms_max = bing_result.get("rooms_max")
+                response.rooms_source_notes = bing_result.get("rooms_source_notes")
+                response.confidence_score = bing_result.get("confidence", 0.0)
+                response.website_source_url = "Bing Grounding"
+                
+                if bing_result.get("uk_contact_phone"):
+                    response.phone_source_url = "Bing Grounding"
+
+                # If we got a website, optionally do deep scraping for more data
+                website_url = bing_result.get("official_website")
+                if website_url and (not response.rooms_min or not response.uk_contact_phone):
+                    logger.info(f"Bing found website {website_url}, deep scraping for missing data...")
+                    await self._deep_scrape_and_extract(request, response, website_url)
+                
+                # Determine status
+                if response.rooms_min and response.uk_contact_phone and response.official_website:
+                    response.status = StatusEnum.SUCCESS
+                elif response.rooms_min or response.uk_contact_phone or response.official_website:
+                    response.status = StatusEnum.PARTIAL
+                else:
+                    response.status = StatusEnum.NOT_FOUND
+
+                # Cache the result
+                if use_cache and self.cache_service and self.cache_service.is_connected:
+                    await self._cache_response(request.name, address_str, response)
+
+                return response
+
+            # Step 1b: Fallback to web search (SerpAPI/DuckDuckGo) if Bing grounding unavailable or failed
+            logger.info(f"Falling back to web search for: {request.name}")
             search_results = self.search_service.search_hotel_website(
                 name=request.name,
                 address=request.address,
@@ -368,3 +416,55 @@ class HotelLookupService:
             response.rooms_source_notes = f"Planning portal: {notes}"
             if planning_result.get("source_url"):
                 response.rooms_source_notes += f" ({planning_result['source_url']})"
+
+    async def _deep_scrape_and_extract(
+        self, request: HotelSearchRequest, response: HotelInfoResponse, website_url: str
+    ) -> None:
+        """
+        Deep scrape a hotel website and use AI to extract missing information.
+        Used to supplement Bing grounding results when some data is missing.
+        """
+        try:
+            scrape_result = await self.scraper_service.deep_scrape_hotel(website_url)
+            
+            if not scrape_result["success"]:
+                response.errors.append(f"Deep scrape failed for {website_url}")
+                return
+            
+            # Check for domain parking
+            parking_check = self.scraper_service.detect_domain_parking(
+                html=scrape_result.get("raw_html", ""),
+                text_content=scrape_result["text_content"]
+            )
+            if parking_check["is_parked"]:
+                response.errors.append("Website appears to be parked - data may be stale")
+                return
+            
+            # Use AI to extract additional information
+            if self.ai_service.is_configured:
+                extraction = await self.ai_service.extract_hotel_info(
+                    hotel_name=request.name,
+                    website_content=scrape_result["text_content"],
+                    phone_candidates=scrape_result["phone_numbers"],
+                    room_candidates=scrape_result["room_mentions"]
+                )
+                
+                # Fill in missing data from extraction
+                if not response.rooms_min and extraction.get("rooms_min"):
+                    response.rooms_min = extraction["rooms_min"]
+                    response.rooms_max = extraction.get("rooms_max", response.rooms_min)
+                    response.rooms_source_notes = extraction.get("rooms_source_notes", "Extracted from hotel website")
+                
+                if not response.uk_contact_phone and extraction.get("uk_phone"):
+                    response.uk_contact_phone = extraction["uk_phone"]
+                    response.phone_source_url = website_url
+                
+                # Update confidence if extraction had higher confidence
+                extraction_confidence = extraction.get("confidence", 0.0)
+                if extraction_confidence > (response.confidence_score or 0.0):
+                    response.confidence_score = extraction_confidence
+
+        except Exception as e:
+            logger.warning(f"Deep scrape/extract failed for {website_url}: {e}")
+            response.errors.append(f"Deep scrape error: {str(e)}")
+

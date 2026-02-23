@@ -131,6 +131,10 @@
                     "ai_provider": {
                       "type": "string",
                       "description": "The AI provider being used"
+                    },
+                    "search_provider": {
+                      "type": "string",
+                      "description": "The search provider being used (Bing Grounding or SerpAPI/DuckDuckGo)"
                     }
                   }
                 }

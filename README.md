@@ -4,13 +4,14 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
 
 ## Features
 
-- 🔍 **Automatic Website Discovery**: Finds hotel official websites via Google Hotels API (SerpAPI) and web search
-- 🏨 **Google Hotels Integration**: Uses SerpAPI's Google Hotels API to find official hotel websites directly
-- 🕷️ **Smart Web Scraping**: Scrapes multiple pages (homepage, about, rooms, contact)
-- 🤖 **AI-Powered Extraction**: Uses Azure OpenAI GPT to extract structured data from unstructured content
+- 🔍 **Bing Grounding Search**: Uses Azure AI Foundry agent with Bing Grounding to find hotel information
+- 🤖 **AI-Powered Agent**: HotelTVSearch agent searches and extracts data in a single step
+- 🕷️ **Smart Web Scraping**: Optionally deep-scrapes hotel websites for additional data
+- 🧠 **AI Extraction**: Uses Azure OpenAI GPT to extract structured data from unstructured content
 - 📞 **UK Phone Validation**: Validates and formats UK phone numbers
 - 📊 **Confidence Scoring**: Provides confidence scores for extracted data
 - 🐳 **Containerized**: Deployed on Azure Container Apps
+- 💾 **Redis Caching**: Caches results with configurable TTL
 
 ## How It Works - Workflow
 
@@ -32,11 +33,13 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
                          ┌─────────────────────┐
                          │   STEP 1: SEARCH    │
                          │   ───────────────   │
-                         │ • Google Hotels API │
-                         │   (via SerpAPI)     │
-                         │ • Fallback: Google  │
-                         │   Search (SerpAPI)  │
-                         │ • Filter aggregators│
+                         │ • Bing Grounding    │
+                         │   Agent searches    │
+                         │   the web via Bing  │
+                         │ • Returns website,  │
+                         │   phone, rooms      │
+                         │ • Fallback: SerpAPI │
+                         │   / DuckDuckGo      │
                          └──────────┬──────────┘
                                     │
                                     ▼
@@ -99,7 +102,7 @@ An AI-powered containerized API that extracts hotel information (room counts, ph
 
 | Step | Component | Description |
 |------|-----------|-------------|
-| **1. Search** | `WebSearchService` | First searches Google Hotels API via SerpAPI - when an exact hotel match is found, the official website link is extracted directly. Falls back to Google Search via SerpAPI for "[Hotel Name] hotel UK official website". Ranks results, filtering out aggregators (Booking.com, TripAdvisor, etc.). |
+| **1. Search** | `BingGroundingService` | Uses Azure AI Foundry HotelTVSearch agent with Bing Grounding to search the web. The agent can return the official website, phone number, and room count in a single call. Falls back to SerpAPI/DuckDuckGo if Bing Grounding is unavailable. |
 | **2. Validate** | `WebSearchService` | Tests candidate URLs with HTTP HEAD requests to verify they're accessible and respond correctly. |
 | **3. Scrape** | `WebScraperService` | Fetches the homepage HTML, then identifies and scrapes relevant subpages (rooms, accommodation, contact, about). Extracts clean text from up to 4 pages. |
 | **4. Extract** | `WebScraperService` | Pre-processes content using regex patterns to identify phone numbers (validated as UK format) and room count mentions (e.g., "150 rooms", "200 bedrooms"). |
@@ -118,8 +121,13 @@ AZURE_OPENAI_ENDPOINT=https://your-resource.openai.azure.com/
 AZURE_OPENAI_API_KEY=your-azure-openai-key
 AZURE_OPENAI_DEPLOYMENT=gpt-4
 
-# SerpAPI for Google Hotels/Search (required)
-SERPAPI_API_KEY=your-serpapi-key
+# Azure AI Foundry - Bing Grounding (primary search)
+AZURE_AI_PROJECT_ENDPOINT=https://your-foundry.services.ai.azure.com/api/projects/yourproject
+BING_CONNECTION_NAME=your-bing-connection
+USE_BING_GROUNDING=true
+
+# SerpAPI (fallback only, optional)
+# SERPAPI_API_KEY=your-serpapi-key
 ```
 
 ### 2. Run with Docker
@@ -168,7 +176,7 @@ POST /api/v1/hotel/lookup
     "rooms_min": 201,
     "rooms_max": 201,
     "rooms_source_notes": "Found on About page: '201 luxurious bedrooms'",
-    "website_source_url": "Google Hotels",
+    "website_source_url": "Bing Grounding",
     "phone_source_url": "https://www.grandbrighton.co.uk/contact",
     "status": "success",
     "last_checked": "2024-02-06T10:30:00Z",
@@ -222,7 +230,8 @@ POST /api/v1/hotel/batch
 - ~$0.001 - $0.005 per hotel lookup
 - For 10,000 hotels: ~$10-50
 
-**SerpAPI:**
+**SerpAPI (fallback only):**
+- Only used when Bing Grounding is unavailable
 - 100 free searches/month
 - Paid plans from $50/month for 5,000 searches
 
@@ -233,7 +242,11 @@ POST /api/v1/hotel/batch
 | `AZURE_OPENAI_ENDPOINT` | Azure OpenAI endpoint | - |
 | `AZURE_OPENAI_API_KEY` | Azure OpenAI key | - |
 | `AZURE_OPENAI_DEPLOYMENT` | Azure deployment name | `gpt-4` |
-| `SERPAPI_API_KEY` | SerpAPI key for Google Hotels/Search | - |
+| `AZURE_AI_PROJECT_ENDPOINT` | Azure AI Foundry project endpoint | - |
+| `AZURE_AI_MODEL_DEPLOYMENT_NAME` | Model for Bing grounding agent | `gpt-5.2-chat` |
+| `BING_CONNECTION_NAME` | Name of Bing connection in AI Foundry | - |
+| `USE_BING_GROUNDING` | Enable/disable Bing grounding | `true` |
+| `SERPAPI_API_KEY` | SerpAPI key (fallback search) | - |
 | `REDIS_URL` | Redis connection URL | `redis://localhost:6379` |
 | `REDIS_ENABLED` | Enable/disable Redis caching | `true` |
 | `CACHE_TTL_HOURS` | Cache time-to-live in hours | `24` |
@@ -328,11 +341,12 @@ HotelTVLicensing/
 ├── models.py               # Pydantic request/response models
 ├── services/
 │   ├── __init__.py
+│   ├── bing_grounding_service.py  # Bing Grounding agent (primary search)
 │   ├── cache_service.py    # Redis caching service
 │   ├── playwright_service.py # Playwright for JS-rendered sites
-│   ├── web_search.py       # Step 1-2: Google Hotels API, Google Search & URL validation
-│   ├── web_scraper.py      # Step 3-4: Scraping & pre-extraction (+ Google Hotels room data)
-│   ├── ai_extractor.py     # Step 5-6: AI verification & extraction (Azure OpenAI)
+│   ├── web_search.py       # Fallback: SerpAPI/DuckDuckGo search
+│   ├── web_scraper.py      # Scraping & pre-extraction
+│   ├── ai_extractor.py     # AI verification & extraction (Azure OpenAI)
 │   └── hotel_lookup.py     # Orchestrates the full workflow
 ├── Dockerfile              # Container definition
 ├── docker-compose.yml      # Container orchestration
@@ -353,10 +367,10 @@ HotelTVLicensing/
 
 **Workflow Log:**
 ```
-1. SEARCH    → Google Hotels API: "The Grand Hotel Brighton" (exact match found)
-             → Official website extracted: https://www.grandbrighton.co.uk
-2. VALIDATE  → Found working URL: https://www.grandbrighton.co.uk
-3. SCRAPE    → Fetched 3 pages: homepage, rooms, contact
+1. SEARCH    → Bing Grounding Agent: "The Grand Hotel Brighton"
+             → Found website, phone, rooms via Bing search
+2. VALIDATE  → Official website confirmed: https://www.grandbrighton.co.uk
+3. SCRAPE    → Deep-scraped 3 pages for additional data
 4. EXTRACT   → Pre-extracted: 2 phone candidates, 3 room mentions
 5. AI VERIFY → GPT confirmed: Website matches "The Grand Hotel Brighton"
 6. AI EXTRACT→ GPT analyzed content, confidence: 0.85

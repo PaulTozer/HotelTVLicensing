@@ -32,13 +32,21 @@ CACHE_TTL_HOURS = int(os.getenv("CACHE_TTL_HOURS", "24"))
 USE_AZURE_OPENAI = bool(AZURE_OPENAI_ENDPOINT and AZURE_OPENAI_API_KEY)
 
 # Rate limiting
-MAX_REQUESTS_PER_MINUTE = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "30"))
+MAX_REQUESTS_PER_MINUTE = int(os.getenv("MAX_REQUESTS_PER_MINUTE", "60"))
 SCRAPE_TIMEOUT_SECONDS = int(os.getenv("SCRAPE_TIMEOUT_SECONDS", "30"))
 
 # Retry settings
 AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "3"))
 AI_RETRY_DELAY_BASE = float(os.getenv("AI_RETRY_DELAY_BASE", "2.0"))
 SEARCH_MAX_RETRIES = int(os.getenv("SEARCH_MAX_RETRIES", "3"))
+
+# Batch processing
+BATCH_MAX_CONCURRENT = int(os.getenv("BATCH_MAX_CONCURRENT", "25"))
+BATCH_MAX_SIZE = int(os.getenv("BATCH_MAX_SIZE", "500"))
+BING_MAX_CONCURRENT = int(os.getenv("BING_MAX_CONCURRENT", "15"))
+BING_THREAD_POOL_SIZE = int(os.getenv("BING_THREAD_POOL_SIZE", "20"))
+BING_RETRY_MAX = int(os.getenv("BING_RETRY_MAX", "3"))
+BING_RETRY_DELAY_BASE = float(os.getenv("BING_RETRY_DELAY_BASE", "2.0"))
 
 # Logging
 LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO")

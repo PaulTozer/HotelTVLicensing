@@ -33,7 +33,7 @@ class HotelSearchRequest(BaseModel):
 
 class HotelBatchRequest(BaseModel):
     """Request model for batch hotel lookup"""
-    hotels: List[HotelSearchRequest] = Field(..., min_length=1, max_length=100)
+    hotels: List[HotelSearchRequest] = Field(..., min_length=1, max_length=500)
 
 
 class HotelInfoResponse(BaseModel):
@@ -85,6 +85,7 @@ class BatchResponse(BaseModel):
     successful: int
     partial: int
     failed: int
+    processing_time_seconds: Optional[float] = None
     results: List[HotelInfoResponse]
 
 

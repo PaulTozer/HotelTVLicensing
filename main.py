@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from config import LOG_LEVEL, REDIS_URL, REDIS_ENABLED
+from config import LOG_LEVEL, REDIS_URL, REDIS_ENABLED, USE_BING_GROUNDING
 from models import (
     HotelSearchRequest, 
     HotelInfoResponse, 
@@ -24,6 +24,7 @@ from models import (
 )
 from services import HotelLookupService, AIExtractorService
 from services.cache_service import CacheService
+from services.bing_grounding_service import BingGroundingService
 
 # Configure logging
 logging.basicConfig(
@@ -36,12 +37,13 @@ logger = logging.getLogger(__name__)
 lookup_service: HotelLookupService = None
 ai_service: AIExtractorService = None
 cache_service: CacheService = None
+bing_service: BingGroundingService = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    global lookup_service, ai_service, cache_service
+    global lookup_service, ai_service, cache_service, bing_service
     
     logger.info("Starting Hotel Information API...")
     
@@ -65,8 +67,23 @@ async def lifespan(app: FastAPI):
     else:
         logger.info("Playwright not available - JavaScript rendering disabled")
     
-    # Initialize lookup service with cache
-    lookup_service = HotelLookupService(cache_service=cache_service)
+    # Initialize Bing Grounding service
+    bing_service = None
+    if USE_BING_GROUNDING:
+        bing_service = BingGroundingService()
+        if bing_service.is_configured:
+            logger.info("Bing Grounding enabled (primary search method)")
+        else:
+            logger.warning("Bing Grounding not configured - falling back to SerpAPI/DuckDuckGo")
+            bing_service = None
+    else:
+        logger.info("Bing Grounding disabled - using SerpAPI/DuckDuckGo")
+    
+    # Initialize lookup service with cache and Bing grounding
+    lookup_service = HotelLookupService(
+        cache_service=cache_service,
+        bing_grounding_service=bing_service,
+    )
     ai_service = AIExtractorService()
     
     if ai_service.is_configured:
@@ -77,6 +94,9 @@ async def lifespan(app: FastAPI):
     yield
     
     # Cleanup
+    if bing_service:
+        await bing_service.cleanup_async()
+    
     if cache_service:
         await cache_service.disconnect()
     
@@ -97,16 +117,18 @@ app = FastAPI(
     An AI-powered API that extracts hotel information from websites.
     
     Given a hotel name and address, this API will:
-    1. Search for the hotel's official website
-    2. Scrape relevant pages for information
+    1. Search for the hotel using Azure AI Foundry agent with Bing Grounding
+    2. Optionally scrape the official website for deeper information
     3. Use AI to extract room counts and contact details
     
     ## Features
-    - Automatic website discovery via web search
+    - **Bing Grounding** via Azure AI Foundry agent (primary search)
+    - SerpAPI/DuckDuckGo fallback search
     - Deep scraping of hotel websites (homepage + subpages)
     - AI-powered information extraction
     - Phone number validation (UK format)
     - Confidence scoring
+    - Redis caching
     
     ## Usage
     - **Single lookup**: POST /api/v1/hotel/lookup
@@ -129,11 +151,13 @@ app.add_middleware(
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """Check API health and configuration status"""
+    search_provider = "Bing Grounding" if bing_service else "SerpAPI/DuckDuckGo"
     return HealthResponse(
         status="healthy",
-        version="1.0.0",
+        version="2.0.0",
         ai_provider=ai_service.get_provider_name() if ai_service else "None",
-        ai_configured=ai_service.is_configured if ai_service else False
+        ai_configured=ai_service.is_configured if ai_service else False,
+        search_provider=search_provider,
     )
 
 

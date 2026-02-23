@@ -3,9 +3,9 @@
 // ============================================================================
 // Deploys ALL resources needed for the Hotel API:
 //   - Azure AI Services (OpenAI + AI Foundry) with model deployments
-//   - Bing Search v7 for grounding
+//   - Grounding with Bing Search (Bing.Grounding / G1)
 //   - AI Hub + AI Project (Azure AI Foundry)
-//   - Connections (AI Services to Hub)
+//   - AI Services connection to the Hub (AAD auth)
 //   - Container Registry, Container Apps, Log Analytics
 //   - RBAC role assignments for managed identity
 // ============================================================================
@@ -26,58 +26,30 @@ param openAiChatModel string = 'gpt-4'
 @description('AI Foundry agent model deployment name (used for Bing Grounding, must support tools)')
 param foundryModel string = 'gpt-4.1-mini'
 
-@description('Bing Search pricing tier (S1 = production, F1 = free tier)')
-param bingSearchSku string = 'S1'
-
 @description('Name for the Bing Grounding connection in AI Foundry')
 param bingConnectionName string = 'bing-grounding'
 
-@description('Azure OpenAI deployment name')
-param azureOpenAiDeployment string = 'gpt-4'
-
-@description('Azure AI Foundry project endpoint for Bing Grounding agent')
-param azureAiProjectEndpoint string
-
-@description('Bing Grounding connection name in Azure AI Foundry')
-param bingConnectionName string
-
-@description('Model deployment for Bing Grounding agent (must be gpt-4.1-mini)')
-param azureAiModelDeployment string = 'gpt-4.1-mini'
-
-@description('Whether to create a Bing Search resource (set false if you already have one)')
-param deployBingSearch bool = false
-
-@description('Bing Search pricing tier (S1 = 1000 calls/month, F1 = free 1000 calls/month)')
-param bingSearchSku string = 'S1'
+// ──────────────────────────────────────────────
+// Variables
+// ──────────────────────────────────────────────
 
 var uniqueSuffix = uniqueString(resourceGroup().id)
 var aiServicesName = '${baseName}-ai-${uniqueSuffix}'
-var storageAccountName = '${baseName}st${uniqueSuffix}'
-var keyVaultName = '${baseName}kv${uniqueSuffix}'
+var storageAccountName = take('${baseName}st${uniqueSuffix}', 24)
+var keyVaultName = take('${baseName}kv${uniqueSuffix}', 24)
 var aiHubName = '${baseName}-hub-${uniqueSuffix}'
 var aiProjectName = '${baseName}-project'
-var bingSearchName = '${baseName}-bing-${uniqueSuffix}'
+var bingGroundingName = '${baseName}-bing-${uniqueSuffix}'
 var logAnalyticsName = '${baseName}-logs-${uniqueSuffix}'
-var containerRegistryName = '${baseName}acr${uniqueSuffix}'
+var containerRegistryName = take('${baseName}acr${uniqueSuffix}', 50)
 var containerAppEnvName = '${baseName}-env-${uniqueSuffix}'
 var containerAppName = '${baseName}-app'
-var logAnalyticsName = '${baseName}-logs-${uniqueSuffix}'
-var bingSearchName = '${baseName}-bing-${uniqueSuffix}'
-
-// Bing Search Resource (optional - set deployBingSearch=true to create)
-resource bingSearch 'Microsoft.Bing/accounts@2020-06-10' = if (deployBingSearch) {
-  name: bingSearchName
-  location: 'global'
-  kind: 'Bing.Search.v7'
-  sku: {
-    name: bingSearchSku
-  }
-}
 
 // Well-known role definition IDs
 var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
 var storageBlobDataContributorRoleId = 'ba92f5b4-2d11-453d-a403-e96b0029c9fe'
 var keyVaultSecretsOfficerRoleId = 'b86a8fe4-44ce-4948-aee5-eccb2c155cd7'
+var acrPullRoleId = '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 
 // ──────────────────────────────────────────────
 // AI Services (Azure OpenAI + AI Foundry)
@@ -96,9 +68,6 @@ resource aiServices 'Microsoft.CognitiveServices/accounts@2024-10-01' = {
   properties: {
     customSubDomainName: aiServicesName
     publicNetworkAccess: 'Enabled'
-    apiProperties: {
-      statisticsEnabled: false
-    }
   }
 }
 
@@ -108,7 +77,7 @@ resource chatModelDeployment 'Microsoft.CognitiveServices/accounts/deployments@2
   name: openAiChatModel
   sku: {
     name: 'Standard'
-    capacity: chatModelCapacity
+    capacity: 10
   }
   properties: {
     model: {
@@ -126,7 +95,7 @@ resource foundryModelDeployment 'Microsoft.CognitiveServices/accounts/deployment
   dependsOn: [chatModelDeployment] // Sequential - ARM deploys children one at a time
   sku: {
     name: 'Standard'
-    capacity: foundryModelCapacity
+    capacity: 10
   }
   properties: {
     model: {
@@ -138,15 +107,15 @@ resource foundryModelDeployment 'Microsoft.CognitiveServices/accounts/deployment
 }
 
 // ──────────────────────────────────────────────
-// Bing Search v7
+// Grounding with Bing Search
 // ──────────────────────────────────────────────
 
-resource bingSearch 'Microsoft.Bing/accounts@2020-06-10' = {
-  name: bingSearchName
+resource bingGrounding 'Microsoft.Bing/accounts@2020-06-10' = {
+  name: bingGroundingName
   location: 'global'
-  kind: 'Bing.Search.v7'
+  kind: 'Bing.Grounding'
   sku: {
-    name: bingSearchSku
+    name: 'G1'
   }
 }
 
@@ -233,19 +202,16 @@ resource hubKeyVaultRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = 
 // AI Hub Connections
 // ──────────────────────────────────────────────
 
-// Connect AI Services (OpenAI) to the Hub
+// Connect AI Services to the Hub (using AAD auth - local auth is disabled by policy)
 resource aiServicesConnection 'Microsoft.MachineLearningServices/workspaces/connections@2024-10-01' = {
   parent: aiHub
   name: '${baseName}-aiservices'
   dependsOn: [hubKeyVaultRole]
   properties: {
-    authType: 'ApiKey'
+    authType: 'AAD'
     category: 'AzureOpenAI'
     isSharedToAll: true
     target: aiServices.properties.endpoint
-    credentials: {
-      key: aiServices.listKeys().key1
-    }
     metadata: {
       ApiVersion: '2024-10-01'
       ApiType: 'Azure'
@@ -337,29 +303,15 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
         transport: 'http'
         allowInsecure: false
       }
-      registries: [
-        {
-          server: containerRegistry.properties.loginServer
-          username: containerRegistry.listCredentials().username
-          passwordSecretRef: 'acr-password'
-        }
-      ]
-      secrets: [
-        {
-          name: 'acr-password'
-          value: containerRegistry.listCredentials().passwords[0].value
-        }
-        {
-          name: 'azure-openai-key'
-          value: aiServices.listKeys().key1
-        }
-      ]
+      // ACR registry config is added after first image push by deploy.ps1
+      secrets: []
     }
     template: {
       containers: [
         {
           name: 'hotel-api'
-          image: '${containerRegistry.properties.loginServer}/${baseName}:latest'
+          // Placeholder image for initial deploy; deploy.ps1 will update with ACR image
+          image: 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
           resources: {
             cpu: json('0.5')
             memory: '1Gi'
@@ -368,10 +320,6 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'AZURE_OPENAI_ENDPOINT'
               value: aiServices.properties.endpoint
-            }
-            {
-              name: 'AZURE_OPENAI_API_KEY'
-              secretRef: 'azure-openai-key'
             }
             {
               name: 'AZURE_OPENAI_DEPLOYMENT'
@@ -384,22 +332,6 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'AZURE_AI_MODEL_DEPLOYMENT_NAME'
               value: foundryModel
-            }
-            {
-              name: 'BING_CONNECTION_NAME'
-              value: bingConnectionName
-            }
-            {
-              name: 'USE_BING_GROUNDING'
-              value: 'true'
-            }
-            {
-              name: 'AZURE_AI_PROJECT_ENDPOINT'
-              value: azureAiProjectEndpoint
-            }
-            {
-              name: 'AZURE_AI_MODEL_DEPLOYMENT_NAME'
-              value: azureAiModelDeployment
             }
             {
               name: 'BING_CONNECTION_NAME'
@@ -455,13 +387,22 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
 // RBAC: Container App → AI Services
 // ──────────────────────────────────────────────
 
-// Container App managed identity needs Cognitive Services User
-// for DefaultAzureCredential in the Bing Grounding agent
 resource containerAppCogServicesRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: aiServices
   name: guid(aiServices.id, containerApp.id, cognitiveServicesUserRoleId)
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', cognitiveServicesUserRoleId)
+    principalId: containerApp.identity.principalId
+    principalType: 'ServicePrincipal'
+  }
+}
+
+// RBAC: Container App → ACR (pull images with managed identity)
+resource containerAppAcrPullRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  scope: containerRegistry
+  name: guid(containerRegistry.id, containerApp.id, acrPullRoleId)
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
     principalId: containerApp.identity.principalId
     principalType: 'ServicePrincipal'
   }
@@ -474,4 +415,9 @@ resource containerAppCogServicesRole 'Microsoft.Authorization/roleAssignments@20
 output containerAppUrl string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
 output containerRegistryLoginServer string = containerRegistry.properties.loginServer
 output containerRegistryName string = containerRegistry.name
-output bingSearchResourceName string = deployBingSearch ? bingSearch.name : 'not-deployed'
+output aiServicesEndpoint string = aiServices.properties.endpoint
+output aiServicesName string = aiServices.name
+output aiProjectName string = aiProject.name
+output aiProjectEndpoint string = '${aiServices.properties.endpoint}api/projects/${aiProject.name}'
+output bingGroundingName string = bingGrounding.name
+output aiHubName string = aiHub.name

@@ -5,9 +5,9 @@
 .DESCRIPTION
     This script provisions the complete Azure environment from scratch:
       1. Azure AI Services (OpenAI + AI Foundry) with model deployments
-      2. Bing Search v7 resource
+      2. Grounding with Bing Search (Bing.Grounding / G1)
       3. AI Hub + AI Project (Azure AI Foundry)
-      4. AI Services connection to the Hub
+      4. AI Services connection to the Hub (AAD auth)
       5. Bing Grounding connection to the Hub
       6. Azure Container Registry
       7. Azure Container Apps (with managed identity + RBAC)
@@ -32,9 +32,6 @@
 .PARAMETER FoundryModel
     Model for Bing Grounding agent - must support function calling (default: gpt-4.1-mini)
 
-.PARAMETER BingSearchSku
-    Pricing tier for Bing Search: S1 (production) or F1 (free) (default: S1)
-
 .PARAMETER BingConnectionName
     Name for the Bing Grounding connection in AI Foundry (default: bing-grounding)
 
@@ -43,15 +40,15 @@
 
 .EXAMPLE
     # Deploy everything with defaults
-    .\deploy.ps1 -ResourceGroupName "rg-hotel-api"
+    .\deploy.ps1
 
 .EXAMPLE
     # Deploy with specific models
-    .\deploy.ps1 -ResourceGroupName "rg-hotel-api" -OpenAiChatModel "gpt-4o" -FoundryModel "gpt-4.1-mini"
+    .\deploy.ps1 -OpenAiChatModel "gpt-4o" -FoundryModel "gpt-4.1-mini"
 
 .EXAMPLE
     # Redeploy just the app (skip infra)
-    .\deploy.ps1 -ResourceGroupName "rg-hotel-api" -SkipInfrastructure
+    .\deploy.ps1 -SkipInfrastructure
 #>
 
 param(
@@ -69,9 +66,6 @@ param(
 
     [Parameter(Mandatory=$false)]
     [string]$FoundryModel = "gpt-4.1-mini",
-
-    [Parameter(Mandatory=$false)]
-    [string]$BingSearchSku = "S1",
 
     [Parameter(Mandatory=$false)]
     [string]$BingConnectionName = "bing-grounding",
@@ -163,7 +157,7 @@ if (-not $SkipInfrastructure) {
     Write-Host "  This creates:" -ForegroundColor Gray
     Write-Host "    - Azure AI Services (OpenAI + AI Foundry)" -ForegroundColor Gray
     Write-Host "    - Model deployments: $OpenAiChatModel + $FoundryModel" -ForegroundColor Gray
-    Write-Host "    - Bing Search v7 ($BingSearchSku)" -ForegroundColor Gray
+    Write-Host "    - Grounding with Bing Search (G1)" -ForegroundColor Gray
     Write-Host "    - AI Hub + AI Project" -ForegroundColor Gray
     Write-Host "    - Storage Account + Key Vault (for Hub)" -ForegroundColor Gray
     Write-Host "    - Container Registry + Container Apps" -ForegroundColor Gray
@@ -171,21 +165,31 @@ if (-not $SkipInfrastructure) {
     Write-Host "  This may take 10-15 minutes on first deploy..." -ForegroundColor Gray
     Write-Host ""
 
-    $deploymentOutput = az deployment group create `
+    $deployResult = az deployment group create `
         --resource-group $ResourceGroupName `
         --template-file "infra/main.bicep" `
         --parameters location=$Location `
         --parameters baseName=$BaseName `
         --parameters openAiChatModel=$OpenAiChatModel `
         --parameters foundryModel=$FoundryModel `
-        --parameters bingSearchSku=$BingSearchSku `
         --parameters bingConnectionName=$BingConnectionName `
-        --query "properties.outputs" `
         --output json 2>&1
 
-    if ($LASTEXITCODE -ne 0) {
+    $deployExitCode = $LASTEXITCODE
+
+    # Check for role assignment conflicts (non-fatal on re-deploy)
+    $onlyRoleConflict = $false
+    if ($deployExitCode -ne 0) {
+        $deployStr = $deployResult -join "`n"
+        if ($deployStr -match "RoleAssignmentExists") {
+            Write-Host "  WARNING: Role assignment already exists (safe to ignore on re-deploy)" -ForegroundColor Yellow
+            $onlyRoleConflict = $true
+        }
+    }
+
+    if ($deployExitCode -ne 0 -and -not $onlyRoleConflict) {
         Write-Host "ERROR: Infrastructure deployment failed!" -ForegroundColor Red
-        Write-Host $deploymentOutput -ForegroundColor Red
+        Write-Host $deployResult -ForegroundColor Red
         Write-Host ""
         Write-Host "Common issues:" -ForegroundColor Yellow
         Write-Host "  - Model not available in region: Check 'az cognitiveservices account list-models --location $Location'" -ForegroundColor Gray
@@ -194,22 +198,22 @@ if (-not $SkipInfrastructure) {
         exit 1
     }
 
-    $outputs = $deploymentOutput | ConvertFrom-Json
-
-    $acrLoginServer = $outputs.containerRegistryLoginServer.value
-    $acrName = $outputs.containerRegistryName.value
-    $appUrl = $outputs.containerAppUrl.value
-    $aiServicesEndpoint = $outputs.aiServicesEndpoint.value
-    $aiServicesName = $outputs.aiServicesName.value
-    $aiProjectName = $outputs.aiProjectName.value
-    $aiProjectEndpoint = $outputs.aiProjectEndpoint.value
-    $bingSearchName = $outputs.bingSearchName.value
-    $aiHubName = $outputs.aiHubName.value
+    # Always resolve resource info from Azure directly (works even after role assignment conflicts)
+    $acrName = az resource list --resource-group $ResourceGroupName --resource-type "Microsoft.ContainerRegistry/registries" --query "[0].name" -o tsv
+    $acrLoginServer = az acr show --name $acrName --query loginServer -o tsv
+    $aiServicesEndpoint = az cognitiveservices account show --name (az resource list --resource-group $ResourceGroupName --resource-type "Microsoft.CognitiveServices/accounts" --query "[0].name" -o tsv) --resource-group $ResourceGroupName --query "properties.endpoint" -o tsv
+    $aiServicesName = az resource list --resource-group $ResourceGroupName --resource-type "Microsoft.CognitiveServices/accounts" --query "[0].name" -o tsv
+    $aiProjectName = "${BaseName}-project"
+    $aiProjectEndpoint = "${aiServicesEndpoint}api/projects/${aiProjectName}"
+    $bingGroundingName = az resource list --resource-group $ResourceGroupName --resource-type "Microsoft.Bing/accounts" --query "[0].name" -o tsv
+    $aiHubName = az resource list --resource-group $ResourceGroupName --resource-type "Microsoft.MachineLearningServices/workspaces" --query "[?kind=='Hub'].name | [0]" -o tsv
+    $appFqdn = az containerapp show --name "${BaseName}-app" --resource-group $ResourceGroupName --query "properties.configuration.ingress.fqdn" -o tsv 2>$null
+    $appUrl = if ($appFqdn) { "https://$appFqdn" } else { "(pending)" }
 
     Write-Host "  Infrastructure deployed successfully!" -ForegroundColor Green
     Write-Host "    AI Services:      $aiServicesEndpoint" -ForegroundColor Gray
     Write-Host "    AI Project:       $aiProjectEndpoint" -ForegroundColor Gray
-    Write-Host "    Bing Search:      $bingSearchName" -ForegroundColor Gray
+    Write-Host "    Bing Grounding:   $bingGroundingName" -ForegroundColor Gray
     Write-Host "    AI Hub:           $aiHubName" -ForegroundColor Gray
     Write-Host "    Container Registry: $acrLoginServer" -ForegroundColor Gray
     Write-Host "    App URL:          $appUrl" -ForegroundColor Gray
@@ -221,10 +225,10 @@ if (-not $SkipInfrastructure) {
 
     Write-Host "Step 4: Creating Bing Grounding connection in AI Hub..." -ForegroundColor Yellow
     
-    # Get Bing Search key
+    # Get Grounding with Bing Search key from the newly created resource
     $bingKeyJson = az resource invoke-action `
         --action listKeys `
-        --ids (az resource show --resource-group $ResourceGroupName --resource-type "Microsoft.Bing/accounts" --name $bingSearchName --query id -o tsv) `
+        --ids (az resource show --resource-group $ResourceGroupName --resource-type "Microsoft.Bing/accounts" --name $bingGroundingName --query id -o tsv) `
         --api-version "2020-06-10" `
         --output json 2>$null
     
@@ -331,6 +335,14 @@ Write-Host ""
 $stepNum = if ($SkipInfrastructure) { "Step 6" } else { "Step 7" }
 Write-Host "${stepNum}: Updating Container App with new image..." -ForegroundColor Yellow
 
+# Configure ACR registry on the Container App and update the image
+az containerapp registry set `
+    --name "${BaseName}-app" `
+    --resource-group $ResourceGroupName `
+    --server $acrLoginServer `
+    --identity system `
+    --output none
+
 az containerapp update `
     --name "${BaseName}-app" `
     --resource-group $ResourceGroupName `
@@ -364,7 +376,7 @@ if (-not $SkipInfrastructure) {
     Write-Host "  AI Hub:             $aiHubName" -ForegroundColor Gray
     Write-Host "  AI Project:         $aiProjectName" -ForegroundColor Gray
     Write-Host "  Project Endpoint:   $aiProjectEndpoint" -ForegroundColor Gray
-    Write-Host "  Bing Search:        $bingSearchName" -ForegroundColor Gray
+    Write-Host "  Bing Grounding:     $bingGroundingName" -ForegroundColor Gray
     Write-Host "  Bing Connection:    $BingConnectionName" -ForegroundColor Gray
     Write-Host "  Chat Model:         $OpenAiChatModel" -ForegroundColor Gray
     Write-Host "  Foundry Model:      $FoundryModel" -ForegroundColor Gray

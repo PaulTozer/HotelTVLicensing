@@ -14,6 +14,15 @@ param azureOpenAiApiKey string
 @description('Azure OpenAI deployment name')
 param azureOpenAiDeployment string = 'gpt-5.2-chat'
 
+@description('Azure AI Foundry project endpoint for Bing Grounding agent')
+param azureAiProjectEndpoint string
+
+@description('Bing Grounding connection name in Azure AI Foundry')
+param bingConnectionName string
+
+@description('Model deployment for Bing Grounding agent (must be gpt-4.1-mini)')
+param azureAiModelDeployment string = 'gpt-4.1-mini'
+
 var uniqueSuffix = uniqueString(resourceGroup().id)
 var containerRegistryName = '${baseName}acr${uniqueSuffix}'
 var containerAppEnvName = '${baseName}-env-${uniqueSuffix}'
@@ -113,6 +122,22 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: azureOpenAiDeployment
             }
             {
+              name: 'AZURE_AI_PROJECT_ENDPOINT'
+              value: azureAiProjectEndpoint
+            }
+            {
+              name: 'AZURE_AI_MODEL_DEPLOYMENT_NAME'
+              value: azureAiModelDeployment
+            }
+            {
+              name: 'BING_CONNECTION_NAME'
+              value: bingConnectionName
+            }
+            {
+              name: 'USE_BING_GROUNDING'
+              value: 'true'
+            }
+            {
               name: 'LOG_LEVEL'
               value: 'INFO'
             }
@@ -123,6 +148,14 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
             {
               name: 'SCRAPE_TIMEOUT_SECONDS'
               value: '30'
+            }
+            {
+              name: 'BATCH_MAX_CONCURRENT'
+              value: '25'
+            }
+            {
+              name: 'BING_MAX_CONCURRENT'
+              value: '15'
             }
           ]
         }

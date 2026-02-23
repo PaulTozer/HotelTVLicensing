@@ -74,10 +74,10 @@ async def lifespan(app: FastAPI):
         if bing_service.is_configured:
             logger.info("Bing Grounding enabled (primary search method)")
         else:
-            logger.warning("Bing Grounding not configured - falling back to SerpAPI/DuckDuckGo")
+            logger.warning("Bing Grounding not configured - check AZURE_AI_PROJECT_ENDPOINT and BING_CONNECTION_NAME")
             bing_service = None
     else:
-        logger.info("Bing Grounding disabled - using SerpAPI/DuckDuckGo")
+        logger.info("Bing Grounding disabled by configuration")
     
     # Initialize lookup service with cache and Bing grounding
     lookup_service = HotelLookupService(
@@ -89,7 +89,7 @@ async def lifespan(app: FastAPI):
     if ai_service.is_configured:
         logger.info(f"AI Provider: {ai_service.get_provider_name()}")
     else:
-        logger.warning("No AI provider configured! Set OPENAI_API_KEY or Azure OpenAI credentials.")
+        logger.warning("No AI provider configured! Set Azure OpenAI credentials.")
     
     yield
     
@@ -123,7 +123,6 @@ app = FastAPI(
     
     ## Features
     - **Bing Grounding** via Azure AI Foundry agent (primary search)
-    - SerpAPI/DuckDuckGo fallback search
     - Deep scraping of hotel websites (homepage + subpages)
     - AI-powered information extraction
     - Phone number validation (UK format)
@@ -151,7 +150,7 @@ app.add_middleware(
 @app.get("/health", response_model=HealthResponse, tags=["Health"])
 async def health_check():
     """Check API health and configuration status"""
-    search_provider = "Bing Grounding" if bing_service else "SerpAPI/DuckDuckGo"
+    search_provider = "Bing Grounding" if bing_service else "Not configured"
     return HealthResponse(
         status="healthy",
         version="2.1.0",
@@ -297,7 +296,7 @@ async def example_response():
         rooms_min=201,
         rooms_max=201,
         rooms_source_notes="Found on About page: 'The Grand Brighton boasts 201 luxurious bedrooms'",
-        website_source_url="DuckDuckGo search",
+        website_source_url="Bing Grounding",
         phone_source_url="https://www.grandbrighton.co.uk/contact",
         status=StatusEnum.SUCCESS,
         confidence_score=0.95,

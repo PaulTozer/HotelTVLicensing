@@ -5,17 +5,11 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# OpenAI Configuration
-OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
-
-# Azure OpenAI Configuration (optional)
+# Azure OpenAI Configuration
 AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT")
 AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY")
 AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_DEPLOYMENT", "gpt-4")
 AZURE_OPENAI_FALLBACK_DEPLOYMENT = os.getenv("AZURE_OPENAI_FALLBACK_DEPLOYMENT", "gpt-4.1-mini")
-
-# SerpAPI Configuration (fallback search - replaced by Bing Grounding)
-SERPAPI_API_KEY = os.getenv("SERPAPI_API_KEY")
 
 # Azure AI Foundry Configuration (for Bing Grounding agent)
 AZURE_AI_PROJECT_ENDPOINT = os.getenv("AZURE_AI_PROJECT_ENDPOINT", "https://PT-AzureAIFoundry-SweCent.services.ai.azure.com/api/projects/firstproject")
@@ -38,7 +32,6 @@ SCRAPE_TIMEOUT_SECONDS = int(os.getenv("SCRAPE_TIMEOUT_SECONDS", "30"))
 # Retry settings
 AI_MAX_RETRIES = int(os.getenv("AI_MAX_RETRIES", "3"))
 AI_RETRY_DELAY_BASE = float(os.getenv("AI_RETRY_DELAY_BASE", "2.0"))
-SEARCH_MAX_RETRIES = int(os.getenv("SEARCH_MAX_RETRIES", "3"))
 
 # Batch processing
 BATCH_MAX_CONCURRENT = int(os.getenv("BATCH_MAX_CONCURRENT", "25"))

@@ -6,7 +6,6 @@ from typing import Optional, List, Callable, Awaitable
 from datetime import datetime
 
 from models import HotelSearchRequest, HotelInfoResponse, StatusEnum
-from .web_search import WebSearchService
 from .web_scraper import WebScraperService
 from .ai_extractor import AIExtractorService
 from .planning_portal import PlanningPortalService
@@ -23,7 +22,6 @@ class HotelLookupService:
     def __init__(self, cache_service: Optional[CacheService] = None, 
                  bing_grounding_service: Optional[BingGroundingService] = None):
         self.bing_service = bing_grounding_service
-        self.search_service = WebSearchService()  # Fallback only
         self.scraper_service = WebScraperService()
         self.ai_service = AIExtractorService()
         self.planning_service = PlanningPortalService()
@@ -122,157 +120,36 @@ class HotelLookupService:
 
                 return response
 
-            # Step 1b: Fallback to web search (SerpAPI/DuckDuckGo) if Bing grounding unavailable or failed
-            # In fast mode, skip entire fallback — Bing-only for maximum speed
+            # Bing Grounding unavailable or returned no results
             if skip_deep_scrape:
                 logger.info(f"Skipping fallback for {request.name} (fast mode, Bing returned no results)")
                 response.status = StatusEnum.NOT_FOUND
                 response.errors.append("Fast mode: Bing Grounding returned no results, skipped fallback")
                 return response
 
-            logger.info(f"Falling back to web search for: {request.name}")
-            search_results = self.search_service.search_hotel_website(
-                name=request.name,
-                address=request.address,
-                city=request.city,
-                postcode=request.postcode
-            )
+            # Without Bing results, try booking sites and planning portal as last resort
+            logger.info(f"Bing Grounding returned no results for: {request.name}")
             
-            if not search_results:
-                response.status = StatusEnum.NOT_FOUND
-                response.errors.append("No search results found for this hotel")
-                return response
-            
-            # Get the best non-aggregator result
-            official_result = None
-            for result in search_results:
-                if not result.get("is_aggregator", True):
-                    official_result = result
-                    break
-            
-            if not official_result:
-                # Fall back to first result if no non-aggregator found
-                official_result = search_results[0]
-                response.errors.append("Could not find official website, using best available result")
-            
-            website_url = official_result.get("url") or official_result.get("href")
-            response.official_website = website_url
-            
-            # Note the source - could be Google Hotels, SerpAPI, or DuckDuckGo
-            source = official_result.get("source", "Web search")
-            response.website_source_url = source
-            
-            logger.info(f"Found website: {website_url} (source: {source})")
-            
-            # Step 2: Scrape the website
-            scrape_result = await self.scraper_service.deep_scrape_hotel(website_url)
-            
-            if not scrape_result["success"]:
+            booking_result = await self._try_booking_sites(request)
+            if booking_result:
+                self._apply_booking_result(response, booking_result)
                 response.status = StatusEnum.PARTIAL
-                response.errors.append(f"Failed to scrape website: {website_url}")
-                
-                # Try booking sites as fallback
-                booking_result = await self._try_booking_sites(request)
-                if booking_result:
-                    self._apply_booking_result(response, booking_result)
-                
-                return response
+                response.errors.append(f"Data sourced from {booking_result.get('source', 'booking site')} as fallback")
             
-            # Check for domain parking (business may have closed)
-            parking_check = self.scraper_service.detect_domain_parking(
-                html=scrape_result.get("raw_html", ""),
-                text_content=scrape_result["text_content"]
-            )
-            
-            if parking_check["is_parked"]:
-                logger.warning(f"Domain appears to be parked: {website_url}")
-                response.status = StatusEnum.PARTIAL
-                response.errors.append(f"Website appears to be a parked domain - business may have closed. Indicators: {', '.join(parking_check['indicators_found'][:3])}")
-                response.official_website = None  # Clear the website since it's not useful
-                
-                # Try booking sites to get historical info
-                booking_result = await self._try_booking_sites(request)
-                if booking_result:
-                    self._apply_booking_result(response, booking_result)
-                    response.errors.append(f"Room count sourced from {booking_result.get('source', 'booking site')}")
-                
-                return response
-            
-            # Step 3: Verify this is the correct hotel
-            website_verified = True
-            if self.ai_service.is_configured:
-                verification = await self.ai_service.verify_website_is_correct(
-                    hotel_name=request.name,
-                    hotel_address=self._build_address(request),
-                    website_content=scrape_result["text_content"]
-                )
-                
-                is_not_match = not verification.get("is_match", True)
-                verification_confidence = verification.get("confidence", 0)
-                
-                if is_not_match:
-                    website_verified = False
-                    response.errors.append(f"Website may not match hotel: {verification.get('reason')}")
-                    response.official_website = None  # Clear since it's wrong
-                    
-                    # If website clearly doesn't match (any confidence that it's wrong), try booking sites
-                    if verification_confidence > 0.5:  # Lowered threshold
-                        logger.info(f"Website verification failed with confidence {verification_confidence}, trying booking sites")
-                        booking_result = await self._try_booking_sites(request)
-                        if booking_result:
-                            self._apply_booking_result(response, booking_result)
-                            response.status = StatusEnum.PARTIAL
-                            response.errors.append(f"Data sourced from {booking_result.get('source', 'booking site')} as fallback")
-                            return response
-                        else:
-                            response.status = StatusEnum.NOT_FOUND
-                            response.errors.append("Could not find hotel information from any source - hotel may have closed")
-                            return response
-            
-            # Step 4: Extract information with AI (only if website was verified)
-            extraction = await self.ai_service.extract_hotel_info(
-                hotel_name=request.name,
-                website_content=scrape_result["text_content"],
-                phone_candidates=scrape_result["phone_numbers"],
-                room_candidates=scrape_result["room_mentions"]
-            )
-            
-            # Populate response from extraction
-            response.rooms_min = extraction.get("rooms_min")
-            response.rooms_max = extraction.get("rooms_max")
-            response.uk_contact_phone = extraction.get("uk_phone")
-            response.rooms_source_notes = extraction.get("rooms_source_notes")
-            response.confidence_score = extraction.get("confidence")
-            
-            # Set phone source URL
-            if response.uk_contact_phone:
-                response.phone_source_url = website_url
+            if not response.rooms_min:
+                planning_result = await self._try_planning_portal(request)
+                if planning_result:
+                    self._apply_planning_result(response, planning_result)
+                    response.errors.append("Room count sourced from planning portal")
             
             # Determine final status
-            if response.rooms_min and response.uk_contact_phone:
+            if response.rooms_min and response.uk_contact_phone and response.official_website:
                 response.status = StatusEnum.SUCCESS
-            elif response.rooms_min or response.uk_contact_phone:
+            elif response.rooms_min or response.uk_contact_phone or response.official_website:
                 response.status = StatusEnum.PARTIAL
             else:
-                response.status = StatusEnum.PARTIAL
-                response.errors.append("Could not extract room count or phone number from website")
-                
-                # Try booking sites as fallback for room count
-                if not response.rooms_min:
-                    booking_result = await self._try_booking_sites(request)
-                    if booking_result:
-                        self._apply_booking_result(response, booking_result)
-                        if response.rooms_min:
-                            response.status = StatusEnum.PARTIAL
-                            response.errors.append(f"Room count sourced from {booking_result.get('source', 'booking site')}")
-                
-                # Last resort: try planning portal for room count
-                if not response.rooms_min:
-                    planning_result = await self._try_planning_portal(request)
-                    if planning_result:
-                        self._apply_planning_result(response, planning_result)
-                        if response.rooms_min:
-                            response.errors.append(f"Room count sourced from planning portal")
+                response.status = StatusEnum.NOT_FOUND
+                response.errors.append("No information found from any source")
             
             logger.info(f"Lookup complete for {request.name}: status={response.status}")
             

@@ -32,15 +32,23 @@ param bingSearchSku string = 'S1'
 @description('Name for the Bing Grounding connection in AI Foundry')
 param bingConnectionName string = 'bing-grounding'
 
-@description('Tokens-per-minute capacity (in thousands) for chat model')
-param chatModelCapacity int = 30
+@description('Azure OpenAI deployment name')
+param azureOpenAiDeployment string = 'gpt-4'
 
-@description('Tokens-per-minute capacity (in thousands) for foundry model')
-param foundryModelCapacity int = 30
+@description('Azure AI Foundry project endpoint for Bing Grounding agent')
+param azureAiProjectEndpoint string
 
-// ──────────────────────────────────────────────
-// Variables
-// ──────────────────────────────────────────────
+@description('Bing Grounding connection name in Azure AI Foundry')
+param bingConnectionName string
+
+@description('Model deployment for Bing Grounding agent (must be gpt-4.1-mini)')
+param azureAiModelDeployment string = 'gpt-4.1-mini'
+
+@description('Whether to create a Bing Search resource (set false if you already have one)')
+param deployBingSearch bool = false
+
+@description('Bing Search pricing tier (S1 = 1000 calls/month, F1 = free 1000 calls/month)')
+param bingSearchSku string = 'S1'
 
 var uniqueSuffix = uniqueString(resourceGroup().id)
 var aiServicesName = '${baseName}-ai-${uniqueSuffix}'
@@ -53,6 +61,18 @@ var logAnalyticsName = '${baseName}-logs-${uniqueSuffix}'
 var containerRegistryName = '${baseName}acr${uniqueSuffix}'
 var containerAppEnvName = '${baseName}-env-${uniqueSuffix}'
 var containerAppName = '${baseName}-app'
+var logAnalyticsName = '${baseName}-logs-${uniqueSuffix}'
+var bingSearchName = '${baseName}-bing-${uniqueSuffix}'
+
+// Bing Search Resource (optional - set deployBingSearch=true to create)
+resource bingSearch 'Microsoft.Bing/accounts@2020-06-10' = if (deployBingSearch) {
+  name: bingSearchName
+  location: 'global'
+  kind: 'Bing.Search.v7'
+  sku: {
+    name: bingSearchSku
+  }
+}
 
 // Well-known role definition IDs
 var cognitiveServicesUserRoleId = 'a97b65f3-24c7-4388-baec-2e87135dc908'
@@ -374,6 +394,22 @@ resource containerApp 'Microsoft.App/containerApps@2023-05-01' = {
               value: 'true'
             }
             {
+              name: 'AZURE_AI_PROJECT_ENDPOINT'
+              value: azureAiProjectEndpoint
+            }
+            {
+              name: 'AZURE_AI_MODEL_DEPLOYMENT_NAME'
+              value: azureAiModelDeployment
+            }
+            {
+              name: 'BING_CONNECTION_NAME'
+              value: bingConnectionName
+            }
+            {
+              name: 'USE_BING_GROUNDING'
+              value: 'true'
+            }
+            {
               name: 'LOG_LEVEL'
               value: 'INFO'
             }
@@ -438,10 +474,4 @@ resource containerAppCogServicesRole 'Microsoft.Authorization/roleAssignments@20
 output containerAppUrl string = 'https://${containerApp.properties.configuration.ingress.fqdn}'
 output containerRegistryLoginServer string = containerRegistry.properties.loginServer
 output containerRegistryName string = containerRegistry.name
-output aiServicesEndpoint string = aiServices.properties.endpoint
-output aiServicesName string = aiServices.name
-output aiProjectName string = aiProject.name
-output aiProjectEndpoint string = '${aiServices.properties.endpoint}api/projects/${aiProject.name}'
-output bingSearchName string = bingSearch.name
-output bingConnectionName string = bingConnectionName
-output aiHubName string = aiHub.name
+output bingSearchResourceName string = deployBingSearch ? bingSearch.name : 'not-deployed'
